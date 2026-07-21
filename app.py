@@ -470,7 +470,22 @@ async def ask_avatar(
         request.avatar_persona,
     )
 
-    primary      = "ja" if request.speak_language == "ja" else "en"
+    # `speak_language` on this request and the persisted `response_language`
+    # in UserSettings are meant to represent the same choice, but nothing
+    # previously tied them together — /ask only ever looked at whatever
+    # speak_language happened to arrive on this one request, so a saved
+    # response_language preference had no effect on the actual reply
+    # unless the frontend also remembered to resend it every time. The
+    # saved setting is now the source of truth here, same as ui_language
+    # and last_avatar already are elsewhere; an explicit non-default
+    # speak_language on the request can still override it for one-off cases.
+    settings_row = session.get(UserSettings, user_id)
+    stored_response_language = settings_row.response_language if settings_row else None
+    effective_language = request.speak_language
+    if stored_response_language and (not effective_language or effective_language == "en"):
+        effective_language = stored_response_language
+
+    primary      = "ja" if effective_language == "ja" else "en"
 
     # Chat history is now per-user (X-User-Id) as well as per-avatar
     # (character_name) — a row belongs to exactly one user, and each user
