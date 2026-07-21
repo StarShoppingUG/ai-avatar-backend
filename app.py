@@ -100,16 +100,13 @@ def resolve_voice(name: str, use_japanese: bool = False) -> str:
         return name
     return JA_VOICE if use_japanese else EN_VOICE
 
-# ==========================================
 # 4. APP SETUP
-# ==========================================
 
 app = FastAPI(title="AI Avatar Backend")
 
-# RESTRICTED CORS FOR DEPLOYMENT READY INFRASTRUCTURE
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Swap to specific domain e.g., ["https://yourdomain.com"] during DNS launch
+    allow_origins=["https://ai-avatar-ui-ghost.vercel.app"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
