@@ -1,0 +1,31 @@
+# Secrets — never commit real keys
+.env
+.env.*
+!.env.example
+
+# Python bytecode/cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# SQLite database — generated at runtime (init_db() recreates it), and on
+# a real deploy it lives on the persistent disk, not in the repo
+*.db
+*.db-journal
+
+# Generated TTS audio — temp_*.mp3 files written by safe_tts() at request
+# time. Keep the static/ folder itself trackable (so a fresh clone still
+# has somewhere for app.py's os.makedirs("static") / StaticFiles mount to
+# point at) but ignore everything actually generated inside it.
+static/*
+!static/.gitkeep
+
+# Editor/OS cruft
+.DS_Store
+.vscode/
+.idea/
