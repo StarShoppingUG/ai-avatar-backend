@@ -59,14 +59,19 @@ def build_character_system(user_text: str, character_name: str = None, avatar_pe
         f"You ARE {active_character}. This is not a role you are describing from the outside — "
         f"you think, speak, and answer in first person AS {active_character} for this whole conversation. "
         "Never break character, and never say you are an AI, a language model, or an assistant.\n"
-        f"YOUR IDENTITY: {avatar_specialty}\n"
+        f"YOUR IDENTITY (this describes YOU, the avatar — NOT the user): {avatar_specialty}\n"
         "- If asked who you are or to introduce yourself, answer briefly using your identity above — "
         "your name alone is not an introduction.\n"
         "- Let your identity shape your tone, the examples you reach for, and the advice you give, "
         "even when the topic is general.\n"
         "- If a question falls clearly outside your identity, you may still help if you reasonably can, "
         "but say briefly that it's outside what you specialize in and, where it makes sense, steer the "
-        "conversation back toward your area. This is a soft steer, not a refusal — stay warm and helpful.\n\n"
+        "conversation back toward your area. This is a soft steer, not a refusal — stay warm and helpful.\n"
+        "- CRITICAL: never attribute your own name, background, persona, or traits to the user. If asked "
+        "what you know about the user (their name, background, preferences, etc.), answer only from what "
+        "the user themselves has actually said in the conversation history — never from your own identity "
+        "above. If the user hasn't told you anything about themselves yet, say so honestly instead of "
+        "describing yourself back to them.\n\n"
         "Respond like a helpful, natural conversation partner. Be relaxed, clear, and human.\n"
     )
 
@@ -327,12 +332,15 @@ _MEMORY_CONTEXT = (
     "CONVERSATION MEMORY — RULES\n"
     "═══════════════════════════════════════════════════════\n"
     "You are in an ONGOING conversation with the user. You MUST:\n"
-    "1. REMEMBER what the user has told you about themselves (name, preferences, etc.)\n"
+    "1. REMEMBER what the user has told you about themselves (name, preferences, etc.) — "
+    "using ONLY their own messages in the history below, never your own character persona.\n"
     "2. Reference previous messages when relevant\n"
     "3. NEVER say 'we just started talking' if you have conversation history below\n"
     "4. NEVER say you don't know the user's name if they already told you\n"
     "5. NEVER invent or hallucinate names the user never mentioned\n"
-    "6. If asked 'what is my name?', check the conversation history below first\n"
+    "6. If asked 'what is my name?' or 'what do you know about me?', check the conversation "
+    "history below first — and only the *user's own turns* in it, never your own persona/identity "
+    "block above. Your name, background, and traits belong to you, not the user.\n"
     "═══════════════════════════════════════════════════════\n\n"
 )
 
@@ -619,12 +627,6 @@ def get_history(
     user_id: str = Depends(get_user_id),
     session: Session = Depends(get_session),
 ):
-    # Source of truth for the chat history panel — now backed by SQLite
-    # (see db.py) instead of the old in-memory list, scoped to the
-    # requesting user. When the frontend passes ?character_name=<avatar>,
-    # only that avatar's turns for this user are returned; omitting it
-    # returns everything this user has, across every avatar (kept for
-    # backwards-compat / debugging).
     query = select(ChatMessage).where(ChatMessage.user_id == user_id)
     if character_name is not None:
         query = query.where(ChatMessage.character_name == character_name)
@@ -638,7 +640,7 @@ def get_history(
             "text_en": h.text_en,
             "text_ja": h.text_ja,
             "character_name": h.character_name,
-            "time": h.time.isoformat(),
+            "time": h.time_iso(),   # was h.time.isoformat()
         }
         for h in rows
     ]

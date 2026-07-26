@@ -16,19 +16,13 @@ Two tables:
   - UserSettings  — one row per user_id: last-selected avatar, UI language,
                     reply language. Upserted from a single endpoint.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 import os
 
 from sqlmodel import SQLModel, Field, create_engine, Session
-from sqlalchemy import text, inspect
+from sqlalchemy import Column, DateTime, text, inspect
 
-# Locally this defaults to a file next to the code, same as before. On a
-# host with a persistent disk (Render, Fly, etc), the disk is mounted at
-# some specific path that is NOT your working directory — set DATABASE_PATH
-# in that host's environment variables to point inside the mounted disk
-# (e.g. "/var/data/avatar_app.db") so the db file actually lives on
-# persistent storage instead of being wiped on every redeploy/restart.
 DB_PATH = os.environ.get("DATABASE_PATH", "./avatar_app.db")
 _db_dir = os.path.dirname(os.path.abspath(DB_PATH))
 os.makedirs(_db_dir, exist_ok=True)
@@ -50,7 +44,30 @@ class ChatMessage(SQLModel, table=True):
     text: Optional[str] = None       # original user-facing text (user turns)
     text_en: Optional[str] = None    # assistant reply, English
     text_ja: Optional[str] = None    # assistant reply, Japanese
-    time: datetime = Field(default_factory=datetime.utcnow)
+    time: datetime = Field(
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            default=lambda: datetime.now(timezone.utc),
+        )
+    )
+    def time_iso(self) -> str:
+        """
+        SQLite has no real timezone-aware datetime type — DateTime(timezone=True)
+        stores the value correctly, but SQLAlchemy reads it back as a *naive*
+        datetime (tzinfo dropped), even though the clock value is still UTC.
+        Calling .isoformat() on that naive value produces a string with no
+        offset/Z suffix, and JS's `new Date(...)` treats an offset-less string
+        as *local* time — so the frontend silently reinterpreted a UTC
+        timestamp as local time, shifting every displayed time by the
+        server/browser's UTC offset. Reattaching tzinfo=utc here (it's always
+        UTC — that's the only thing ever written to this column) fixes the
+        serialized string so the frontend converts it correctly.
+        """
+        value = self.time
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat()
 
 
 class UserSettings(SQLModel, table=True):
