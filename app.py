@@ -17,9 +17,6 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 import edge_tts
 
-# ==========================================
-# 2. MODULE IMPORTS
-# ==========================================
 try:
     from .translation import translate_to_japanese, translate_to_english, is_japanese
     from .ai import ai_available, call_llm, GROQ_MODEL, _get_current_date_context, transcribe_audio
@@ -31,24 +28,30 @@ except ImportError:
     from json_utils import normalize_json_like, extract_quoted_value
     from db import init_db, get_session, ChatMessage, UserSettings
 
-# ==========================================
-# 1. USER IDENTITY (no accounts — see db.py)
-# ==========================================
-# The frontend generates a UUID on first visit (localStorage) and sends it
-# as X-User-Id on every request. It's a bare foreign key, not validated —
-# treat it as opaque. Required on the endpoints that read/write per-user
-# data (chat history, settings); endpoints that don't touch either
 # (/voice, /stt, /translate, /voices, /health) don't need it.
-def get_user_id(x_user_id: Optional[str] = Header(default=None)) -> str:
+def get_user_id(
+    x_user_id: Optional[str] = Header(default=None),
+    x_app_id: Optional[str] = Header(default=None),
+) -> str:
+    """Returns a scoped identity string combining tenant (app) and end-user,
+    e.g. "acme-corp::user-48213". This is what actually gets stored as
+    user_id everywhere (ChatMessage, UserSettings) — every existing query
+    that filters on user_id therefore already gets full per-app isolation
+    for free, with no schema changes and no query changes required.
+
+    x_app_id is optional for backward compatibility (older/solo frontends
+    that don't send it yet) and falls back to a shared "default" tenant —
+    matches CharacterBrain.js's own fallback behavior on the frontend.
+    """
     if not x_user_id or not x_user_id.strip():
         raise HTTPException(status_code=400, detail="Missing X-User-Id header")
-    return x_user_id.strip()
+    app_id = (x_app_id or "default").strip() or "default"
+    return f"{app_id}::{x_user_id.strip()}"
 
 DEV_LOGGING = os.environ.get("DEV_LOGGING", "false").strip().lower() in ("1", "true", "yes")
 
-# ==========================================
+
 # 3. VOICE CATALOG
-# ==========================================
 EN_VOICE = "en-US-JennyNeural"
 JA_VOICE = "ja-JP-NanamiNeural"
 
@@ -74,20 +77,6 @@ def build_character_system(user_text: str, character_name: str = None, avatar_pe
         "describing yourself back to them.\n\n"
         "Respond like a helpful, natural conversation partner. Be relaxed, clear, and human.\n"
     )
-
-VOICE_CATALOG = {
-    "en": [
-        {"name": "en-US-JennyNeural", "label": "Jenny (US, female)"},
-        {"name": "en-US-AriaNeural",  "label": "Aria (US, female)"},
-        {"name": "en-US-GuyNeural",   "label": "Guy (US, male)"},
-        {"name": "en-GB-SoniaNeural", "label": "Sonia (UK, female)"},
-        {"name": "en-GB-RyanNeural",  "label": "Ryan (UK, male)"},
-    ],
-    "ja": [
-        {"name": "ja-JP-NanamiNeural", "label": "Nanami — Japanese, female"},
-        {"name": "ja-JP-KeitaNeural",  "label": "Keita — Japanese, male"},
-    ],
-}
 
 VOICE_MAP = {
     "en":           EN_VOICE,
@@ -664,13 +653,6 @@ def reset_conversation(
     session.commit()
     return {"status": "cleared", "mode": "sqlite"}
 
-@app.get("/voices")
-async def list_voices():
-    return {
-        "catalog":    VOICE_CATALOG,
-        "default_en": EN_VOICE,
-        "default_ja": JA_VOICE,
-    }
 
 class SettingsRequest(BaseModel):
     # All optional — POST /settings is a partial update; only the fields

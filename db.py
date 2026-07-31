@@ -23,16 +23,31 @@ import os
 from sqlmodel import SQLModel, Field, create_engine, Session
 from sqlalchemy import Column, DateTime, text, inspect
 
-DB_PATH = os.environ.get("DATABASE_PATH", "./avatar_app.db")
-_db_dir = os.path.dirname(os.path.abspath(DB_PATH))
-os.makedirs(_db_dir, exist_ok=True)
-DATABASE_URL = f"sqlite:///{DB_PATH}"
+# DATABASE_URL, when set (e.g. on Railway/Render pointing at a managed
+# Postgres like Neon), takes priority — this is the persistent-across-
+# restarts path. Falls back to a local SQLite file only when it's unset,
+# so local dev without any DB configured still works exactly as before.
+DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
-# check_same_thread=False is required for SQLite + FastAPI's threadpool
-# (requests can be served on a different thread than the one that opened
-# the connection). Safe here since SQLModel/SQLAlchemy still serializes
-# access to the underlying connection per-session.
-engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False})
+if DATABASE_URL:
+    # Neon (and some other providers) hand out URLs starting with
+    # "postgres://", which SQLAlchemy's psycopg2 dialect no longer accepts —
+    # it wants the explicit "postgresql://" scheme. Normalize either way.
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    # check_same_thread is a SQLite-only connect arg — Postgres doesn't
+    # understand it and errors if passed.
+    engine = create_engine(DATABASE_URL, echo=False)
+else:
+    DB_PATH = os.environ.get("DATABASE_PATH", "./avatar_app.db")
+    _db_dir = os.path.dirname(os.path.abspath(DB_PATH))
+    os.makedirs(_db_dir, exist_ok=True)
+    sqlite_url = f"sqlite:///{DB_PATH}"
+    # check_same_thread=False is required for SQLite + FastAPI's threadpool
+    # (requests can be served on a different thread than the one that opened
+    # the connection). Safe here since SQLModel/SQLAlchemy still serializes
+    # access to the underlying connection per-session.
+    engine = create_engine(sqlite_url, echo=False, connect_args={"check_same_thread": False})
 
 
 class ChatMessage(SQLModel, table=True):

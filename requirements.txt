@@ -9,3 +9,4 @@ pypdf==5.9.0
 python-docx==1.2.0
 pytest==9.1.1
 sqlmodel
+psycopg2-binary
