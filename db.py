@@ -90,6 +90,12 @@ class UserSettings(SQLModel, table=True):
     ui_language: Optional[str] = "en"
     response_language: Optional[str] = "ja"
     last_avatar: Optional[str] = None
+    # JSON-serialized dict, e.g. '{"slot-1::female_ug": {"name": "...", "persona": "...", "personaJa": "..."}}'
+    # Stored as text (SQLite/most SQLAlchemy backends have no native dict
+    # column) — save_settings()/get_settings() in main.py handle the
+    # json.dumps/json.loads at the API boundary, so this column never holds
+    # anything but a plain string or None.
+    persona_overrides: Optional[str] = None
 
 
 def init_db() -> None:

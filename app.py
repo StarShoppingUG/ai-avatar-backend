@@ -655,12 +655,12 @@ def reset_conversation(
 
 
 class SettingsRequest(BaseModel):
-    # All optional — POST /settings is a partial update; only the fields
-    # present in the body get written, everything else on the row is left
-    # as-is (see save_settings below).
     ui_language: Optional[str] = None
     response_language: Optional[str] = None
     last_avatar: Optional[str] = None
+    # Opaque blob from the frontend — keyed "instanceId::avatarId" — stored
+    # and returned as-is, never inspected/validated here.
+    persona_overrides: Optional[dict] = None
 
 @app.get("/settings")
 def get_settings(
@@ -669,13 +669,16 @@ def get_settings(
 ):
     row = session.get(UserSettings, user_id)
     if row is None:
-        # First time we've seen this user_id — hand back defaults without
-        # writing a row yet; POST /settings creates it on first save.
-        return {"ui_language": "en", "response_language": "ja", "last_avatar": None}
+        return {"ui_language": "en", "response_language": "ja", "last_avatar": None, "persona_overrides": {}}
+    try:
+        overrides = json.loads(row.persona_overrides) if row.persona_overrides else {}
+    except Exception:
+        overrides = {}
     return {
         "ui_language": row.ui_language,
         "response_language": row.response_language,
         "last_avatar": row.last_avatar,
+        "persona_overrides": overrides,
     }
 
 @app.post("/settings")
@@ -695,11 +698,18 @@ def save_settings(
         row.response_language = request.response_language
     if request.last_avatar is not None:
         row.last_avatar = request.last_avatar
+    if request.persona_overrides is not None:
+        row.persona_overrides = json.dumps(request.persona_overrides)
 
     session.commit()
     session.refresh(row)
+    try:
+        overrides = json.loads(row.persona_overrides) if row.persona_overrides else {}
+    except Exception:
+        overrides = {}
     return {
         "ui_language": row.ui_language,
         "response_language": row.response_language,
         "last_avatar": row.last_avatar,
+        "persona_overrides": overrides,
     }
