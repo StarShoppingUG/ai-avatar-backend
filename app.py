@@ -52,6 +52,19 @@ def get_app_id(x_app_id: Optional[str] = Header(default=None)) -> str:
     """App-level identity only, no user component — used for AppSettings."""
     return (x_app_id or "default").strip() or "default"
 
+def get_settings_group(x_settings_group: Optional[str] = Header(default=None)) -> str:
+    """Second scoping dimension alongside app_id, for scope=app usage only
+    (see get_settings_scope() below). Lets one app_id share settings per
+    some sub-grouping (e.g. a "character" = scenario + avatar combo)
+    instead of forcing every scope=app user of that app_id onto a single
+    shared row. Defaults to "" when absent — matches AppSettings.settings_group's
+    default, so existing scope=app usage with no group set keeps landing
+    on the same row it always has. No trimming beyond that: unlike
+    x_app_id/x_user_id this is allowed to be an arbitrary opaque string an
+    integrator defines for their own use, not an identity that needs
+    normalizing."""
+    return x_settings_group or ""
+
 def get_settings_scope(x_settings_scope: Optional[str] = Header(default=None)) -> str:
     """'app' = every user of this app-id shares one AppSettings row (opt-in).
     'user' (default when header is absent) = today's per-browser/UUID
@@ -111,8 +124,7 @@ app = FastAPI(title="AI Avatar Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    #allow_origins=["https://ai-avatar-ui-ghost.vercel.app"],
-    allow_origins=["*"],
+    allow_origins=["https://ai-avatar-ui-ghost.vercel.app"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -466,6 +478,7 @@ async def ask_avatar(
     request: AskRequest,
     scope: str = Depends(get_settings_scope),
     app_id: str = Depends(get_app_id),
+    settings_group: str = Depends(get_settings_group),
     user_id: str = Depends(get_user_id),
     session: Session = Depends(get_session),
 ):
@@ -490,7 +503,7 @@ async def ask_avatar(
     # saved setting is now the source of truth here, same as ui_language
     # and last_avatar already are elsewhere; an explicit non-default
     # speak_language on the request can still override it for one-off cases.
-    settings_row = session.get(AppSettings, app_id) if scope == "app" else session.get(UserSettings, user_id)
+    settings_row = session.get(AppSettings, (app_id, settings_group)) if scope == "app" else session.get(UserSettings, user_id)
     stored_response_language = settings_row.response_language if settings_row else None
     effective_language = request.speak_language
     if stored_response_language and (not effective_language or effective_language == "en"):
@@ -680,11 +693,12 @@ class SettingsRequest(BaseModel):
 def get_settings(
     scope: str = Depends(get_settings_scope),
     app_id: str = Depends(get_app_id),
+    settings_group: str = Depends(get_settings_group),
     user_id: str = Depends(get_user_id),
     session: Session = Depends(get_session),
 ):
     if scope == "app":
-        row = session.get(AppSettings, app_id)
+        row = session.get(AppSettings, (app_id, settings_group))
     else:
         row = session.get(UserSettings, user_id)
     if row is None:
@@ -705,13 +719,14 @@ def save_settings(
     request: SettingsRequest,
     scope: str = Depends(get_settings_scope),
     app_id: str = Depends(get_app_id),
+    settings_group: str = Depends(get_settings_group),
     user_id: str = Depends(get_user_id),
     session: Session = Depends(get_session),
 ):
     if scope == "app":
-        row = session.get(AppSettings, app_id)
+        row = session.get(AppSettings, (app_id, settings_group))
         if row is None:
-            row = AppSettings(app_id=app_id)
+            row = AppSettings(app_id=app_id, settings_group=settings_group)
             session.add(row)
     else:
         row = session.get(UserSettings, user_id)

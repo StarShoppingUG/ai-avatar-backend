@@ -7,6 +7,7 @@ This is the high-performance FastAPI backend engine for the AI Avatar system. It
 - **Groq LPU Acceleration** — Leverages high-speed inference via [Groq](https://groq.com/) for Llama conversational generation and Whisper audio transcriptions.
 - **Persistent Storage** — Chat history and per-user settings are stored via SQLModel, backed by Postgres (recommended for production — see [Database](#database)) or a local SQLite file for development.
 - **Multi-Tenant Identity** — Every request is scoped by an `X-App-Id` (which third-party app/deployment) + `X-User-Id` (which of that app's end-users) pair, so multiple integrators can embed the same backend without their users' data colliding — see [Identity & Multi-Tenancy](#identity--multi-tenancy).
+- **Configurable Settings Scoping** — Settings can be stored per-user (default) or per-app via `X-Settings-Scope`, with an optional `X-Settings-Group` dimension to further split app-scoped settings (e.g. per character/scenario within a single app) — see [Settings Scope: Per-App vs Per-User](#settings-scope-per-app-vs-per-user).
 - **On-The-Fly Translation Layer** — Seamlessly maps bilingual conversations. Translates incoming Japanese text to English for uniform LLM processing, then streams output shapes translated back to Japanese complete with custom phonetic romanization properties.
 - **Dual-Voice Audio & Viseme Synthesis** — Generates synchronized server-side `.mp3` audio tracks (`static/`) alongside granular viseme timeline matrices for exact mouth movements.
 - **Smart Pipeline Error Handling** — Rejects blank strings instantly and utilizes non-persisting placeholder mechanics during LLM downtime to protect long-term conversation history states from corruption.
@@ -17,7 +18,7 @@ This is the high-performance FastAPI backend engine for the AI Avatar system. It
 ai-avatar-backend/
 ├── static/                 # Directory holding temporary generated audio files
 ├── app.py                  # Primary entry point — FastAPI app, routers, core pipelines
-├── db.py                    # SQLModel schema (ChatMessage, UserSettings) + Postgres/SQLite engine setup
+├── db.py                    # SQLModel schema (ChatMessage, UserSettings, AppSettings) + Postgres/SQLite engine setup
 ├── ai.py                    # Groq LLM client, Whisper transcription, date/time context builder
 ├── translation.py           # EN<->JA translation helpers
 ├── json_utils.py             # Tolerant parsing of the LLM's behavior JSON
@@ -57,8 +58,8 @@ ai-avatar-backend/
 ### 4. History & Settings Controller
 * **`GET /history`** — Source of truth mapping for the current chat display panel. Requires `X-User-Id` (and `X-App-Id` if multi-tenant). Optional `?character_name=` query param scopes to a single avatar's turns.
 * **`POST /reset`** — Deletes this user's persisted chat history rows. Optional `?character_name=` clears just that avatar's turns; omitted clears everything for this user.
-* **`GET /settings`** — Returns this user's saved `{ ui_language, response_language, last_avatar }`, or defaults if never saved.
-* **`POST /settings`** — Partial update — only send the fields that changed. Returns the full saved settings row.
+* **`GET /settings`** — Returns the saved `{ ui_language, response_language, last_avatar }`, or defaults if never saved. Accepts `X-Settings-Scope` (`"app"` or `"user"`, default `"user"`) and, when scope is `"app"`, an optional `X-Settings-Group` — see [Settings Scope: Per-App vs Per-User](#settings-scope-per-app-vs-per-user).
+* **`POST /settings`** — Partial update — only send the fields that changed. Returns the full saved settings row. Respects the same `X-Settings-Scope` / `X-Settings-Group` headers as `GET /settings`.
 
 ## Identity & Multi-Tenancy
 
@@ -79,6 +80,54 @@ uses, via its hostname-based fallback — see the frontend README's
 [Persistence & Identity](../README.md#persistence--identity) section for
 the client side of this).
 
+## Settings Scope: Per-App vs Per-User
+
+By default, settings (`last_avatar`, `ui_language`, `response_language`,
+`persona_overrides`) are scoped per-user — same `"acme-corp::user-48213"`
+key described above. An optional `X-Settings-Scope` header (`"app"` or
+`"user"`, default `"user"`) lets an integrator instead share one settings
+row across *all* of that app's users:
+
+- **`scope=user`** (default) — settings are read/written to `UserSettings`,
+  keyed by `app_id::user_id` as usual. No behavior change from before this
+  feature existed.
+- **`scope=app`** — settings are read/written to a separate `AppSettings`
+  table, keyed by `app_id` (see Settings Group below for a further
+  sub-dimension). Every user of that `app_id` shares one settings row —
+  useful when an integrator wants one avatar/language choice to apply
+  app-wide rather than per visitor.
+
+### Settings Group (grouping within app-scope)
+
+`AppSettings` rows can be further split with an optional `X-Settings-Group`
+header (string, defaults to `""` when absent). This only applies when
+`X-Settings-Scope: app` — the `user`-scoped path has no group concept.
+
+`AppSettings` is keyed by the composite `(app_id, settings_group)` rather
+than `app_id` alone. This matters for integrators who have multiple
+"characters" (a scenario + avatar combination) within a single `app_id`
+and want settings shared per-character rather than shared across the
+entire app — without a group dimension, changing the avatar on one
+character would update every character under that `app_id`.
+
+```
+X-App-Id: acme-corp
+X-Settings-Scope: app
+X-Settings-Group: character-a
+→ stored/queried as AppSettings("acme-corp", "character-a")
+```
+
+Existing `scope=app` integrators who never send `X-Settings-Group` are
+unaffected — the header defaults to `""`, which is the same stable value
+existing rows were migrated to, so pre-existing app-scoped settings land
+in the same row as before this feature shipped.
+
+> `app_id` still means "which integrator/tenant," not "which character."
+> Use `X-Settings-Group` for character/scenario-level splitting rather
+> than encoding it into `X-App-Id` — keeping `app_id` reserved for
+> tenant identity is what any future per-tenant tooling (rate limiting,
+> admin dashboards, billing) will assume.
+
 ## Database
 
 Storage is handled by `db.py` via SQLModel, and picks its backend based on
@@ -88,11 +137,28 @@ the `DATABASE_URL` environment variable:
 - **`DATABASE_URL` unset** → falls back to a local SQLite file (`DATABASE_PATH` env var, defaults to `./avatar_app.db`) — convenient for local development, but **not persistent** on most free-tier hosts with ephemeral filesystems (e.g. Render's free web services wipe local files on every restart/redeploy).
 
 For any real deployment, set `DATABASE_URL` to a real Postgres connection
-string. Tables (`chatmessage`, `usersettings`) are created automatically
-on startup via `init_db()`, and a lightweight migration helper
-(`_migrate_missing_columns()`) `ALTER TABLE`s in any columns that were
-added to the models after the database file/instance already existed —
-no manual migrations needed for simple additive schema changes.
+string. Tables (`chatmessage`, `usersettings`, `appsettings`) are created
+automatically on startup via `init_db()`, and a lightweight migration
+helper (`_migrate_missing_columns()`) `ALTER TABLE`s in any columns that
+were added to the models after the database file/instance already
+existed — no manual migrations needed for simple additive schema changes.
+
+> **`AppSettings` primary-key migration (settings-group):** unlike simple
+> additive columns, the change that added `settings_group` to
+> `AppSettings` altered an *existing column's role* — the table's primary
+> key went from `app_id` alone to the composite `(app_id,
+> settings_group)`. `create_all()` and `_migrate_missing_columns()` don't
+> handle primary-key changes, so this needed a dedicated one-time
+> migration (`_migrate_app_settings_group()` in `db.py`), run
+> automatically on `init_db()`:
+> - **Postgres** — a real `ALTER TABLE`: backfills any `NULL`
+>   `settings_group` to `""`, then `DROP CONSTRAINT` / `ADD PRIMARY KEY
+>   (app_id, settings_group)`. No table rebuild needed.
+> - **SQLite** (local dev) — SQLite can't alter a primary key in place,
+>   so this path rebuilds the table and copies existing rows across,
+>   landing each at `(app_id, "")` to preserve pre-migration data.
+> - Idempotent either way — safe to run against an already-migrated
+>   database on every startup.
 
 > Note: `POST /reset`'s response currently always reports
 > `"mode": "sqlite"` regardless of which database is actually configured
