@@ -1,21 +1,3 @@
-"""
-db.py — SQLite persistence for chat history and per-user settings.
-
-No accounts/login: each browser generates a random UUID on first visit
-(stored in localStorage) and sends it as the `X-User-Id` header on every
-request. That UUID is the only thing that identifies a "user" here — see
-get_user_id() in backend.py, which reads the header and hands you back a
-plain string. Nothing here validates or authenticates it; it's just a
-foreign key.
-
-Two tables:
-  - ChatMessage   — one row per turn, replaces the old in-memory
-                    `conversation_history` list. Same fields the frontend
-                    already expects from GET /history (character_name,
-                    role, content, text/text_en/text_ja, time).
-  - UserSettings  — one row per user_id: last-selected avatar, UI language,
-                    reply language. Upserted from a single endpoint.
-"""
 from datetime import datetime, timezone
 from typing import Optional
 import os
@@ -95,6 +77,21 @@ class UserSettings(SQLModel, table=True):
     # column) — save_settings()/get_settings() in main.py handle the
     # json.dumps/json.loads at the API boundary, so this column never holds
     # anything but a plain string or None.
+    persona_overrides: Optional[str] = None
+
+
+class AppSettings(SQLModel, table=True):
+    """Same shape as UserSettings, but keyed on app_id alone — for
+    integrators who want every user of their app to share one settings row
+    (last_avatar, languages, persona edits) instead of per-browser
+    isolation. Selected via the X-Settings-Scope: app header — see
+    get_settings_scope() in app.py. UserSettings (per-browser/UUID, the
+    original behavior) is untouched above and remains the default when
+    that header is absent."""
+    app_id: str = Field(primary_key=True)
+    ui_language: Optional[str] = "en"
+    response_language: Optional[str] = "ja"
+    last_avatar: Optional[str] = None
     persona_overrides: Optional[str] = None
 
 

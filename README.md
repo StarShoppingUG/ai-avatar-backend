@@ -29,7 +29,6 @@ ai-avatar-backend/
 
 ### 1. Configuration & Health
 * **`GET /health`** — Validates connection states. Returns the status, AI availability toggles, underlying engine configurations, current target models, and active memory retention parameters.
-* **`GET /voices`** — Outputs the primary `VOICE_CATALOG` index definitions along with English and Japanese defaults.
 
 ### 2. Conversational Engine
 * **`POST /ask`** — Standard entry path for avatar interaction. Accepts an `AskRequest` payload containing text, personality criteria, and target voice layers. Dynamically transforms text across language boundaries, processes LLM history states, writes synchronized local audio files, persists the turn to the database, and returns explicit tracking structures:

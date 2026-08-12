@@ -21,12 +21,12 @@ try:
     from .translation import translate_to_japanese, translate_to_english, is_japanese
     from .ai import ai_available, call_llm, GROQ_MODEL, _get_current_date_context, transcribe_audio
     from .json_utils import normalize_json_like, extract_quoted_value
-    from .db import init_db, get_session, ChatMessage, UserSettings
+    from .db import init_db, get_session, ChatMessage, UserSettings, AppSettings
 except ImportError:
     from translation import translate_to_japanese, translate_to_english, is_japanese
     from ai import ai_available, call_llm, GROQ_MODEL, _get_current_date_context, transcribe_audio
     from json_utils import normalize_json_like, extract_quoted_value
-    from db import init_db, get_session, ChatMessage, UserSettings
+    from db import init_db, get_session, ChatMessage, UserSettings, AppSettings
 
 # (/voice, /stt, /translate, /voices, /health) don't need it.
 def get_user_id(
@@ -47,6 +47,17 @@ def get_user_id(
         raise HTTPException(status_code=400, detail="Missing X-User-Id header")
     app_id = (x_app_id or "default").strip() or "default"
     return f"{app_id}::{x_user_id.strip()}"
+
+def get_app_id(x_app_id: Optional[str] = Header(default=None)) -> str:
+    """App-level identity only, no user component — used for AppSettings."""
+    return (x_app_id or "default").strip() or "default"
+
+def get_settings_scope(x_settings_scope: Optional[str] = Header(default=None)) -> str:
+    """'app' = every user of this app-id shares one AppSettings row (opt-in).
+    'user' (default when header is absent) = today's per-browser/UUID
+    UserSettings isolation — unchanged for any client that doesn't send
+    this header, e.g. the existing Vercel demo."""
+    return "app" if (x_settings_scope or "").strip().lower() == "app" else "user"
 
 DEV_LOGGING = os.environ.get("DEV_LOGGING", "false").strip().lower() in ("1", "true", "yes")
 
@@ -100,7 +111,8 @@ app = FastAPI(title="AI Avatar Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://ai-avatar-ui-ghost.vercel.app"],
+    #allow_origins=["https://ai-avatar-ui-ghost.vercel.app"],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -452,6 +464,8 @@ def health():
 @app.post("/ask")
 async def ask_avatar(
     request: AskRequest,
+    scope: str = Depends(get_settings_scope),
+    app_id: str = Depends(get_app_id),
     user_id: str = Depends(get_user_id),
     session: Session = Depends(get_session),
 ):
@@ -476,7 +490,7 @@ async def ask_avatar(
     # saved setting is now the source of truth here, same as ui_language
     # and last_avatar already are elsewhere; an explicit non-default
     # speak_language on the request can still override it for one-off cases.
-    settings_row = session.get(UserSettings, user_id)
+    settings_row = session.get(AppSettings, app_id) if scope == "app" else session.get(UserSettings, user_id)
     stored_response_language = settings_row.response_language if settings_row else None
     effective_language = request.speak_language
     if stored_response_language and (not effective_language or effective_language == "en"):
@@ -664,10 +678,15 @@ class SettingsRequest(BaseModel):
 
 @app.get("/settings")
 def get_settings(
+    scope: str = Depends(get_settings_scope),
+    app_id: str = Depends(get_app_id),
     user_id: str = Depends(get_user_id),
     session: Session = Depends(get_session),
 ):
-    row = session.get(UserSettings, user_id)
+    if scope == "app":
+        row = session.get(AppSettings, app_id)
+    else:
+        row = session.get(UserSettings, user_id)
     if row is None:
         return {"ui_language": "en", "response_language": "ja", "last_avatar": None, "persona_overrides": {}}
     try:
@@ -684,13 +703,21 @@ def get_settings(
 @app.post("/settings")
 def save_settings(
     request: SettingsRequest,
+    scope: str = Depends(get_settings_scope),
+    app_id: str = Depends(get_app_id),
     user_id: str = Depends(get_user_id),
     session: Session = Depends(get_session),
 ):
-    row = session.get(UserSettings, user_id)
-    if row is None:
-        row = UserSettings(user_id=user_id)
-        session.add(row)
+    if scope == "app":
+        row = session.get(AppSettings, app_id)
+        if row is None:
+            row = AppSettings(app_id=app_id)
+            session.add(row)
+    else:
+        row = session.get(UserSettings, user_id)
+        if row is None:
+            row = UserSettings(user_id=user_id)
+            session.add(row)
 
     if request.ui_language is not None:
         row.ui_language = request.ui_language
