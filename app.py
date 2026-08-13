@@ -138,7 +138,7 @@ def _on_startup():
     init_db()
     for mw in app.user_middleware:
         if mw.cls.__name__ == "CORSMiddleware":
-            print(f"🔍 CORS raw options: {mw.options}", flush=True)
+            print(f"🔍 CORS raw options: {mw.kwargs}", flush=True)
 
 # ==========================================
 # 5. BEHAVIOR JSON PARSING
