@@ -11,6 +11,15 @@ Everything else the character actually says or does (personas, TTS/visemes,
 voice catalog, response validation) lives in backend.py — this file used to
 duplicate all of that too (its own think(), smalltalk classifier, TTS
 pipeline, voice catalog), but none of it was ever called, so it's gone.
+
+NOTE: this file previously had an optional Gemini path for translation only
+(translation.py called call_translation_llm(), which tried Gemini first and
+fell back to Groq). That was removed on request — Groq alone comfortably
+covers current usage (dev/testing, <10 users), and Gemini's free tier added
+latency (occasional 503 "high demand" errors) without a corresponding
+benefit at this scale. call_translation_llm() is kept as a thin wrapper
+around call_llm() so translation.py didn't need any changes — it still
+imports and calls the same names as before.
 """
 import os
 import re
@@ -65,6 +74,31 @@ def ai_available() -> bool:
     return llm_client is not None
 
 
+def translation_ai_available() -> bool:
+    """Kept as a separate name (rather than having translation.py call
+    ai_available() directly) so nothing else needs to change if translation
+    ever needs its own availability check again later — right now it's
+    identical to ai_available() since Groq is the only provider."""
+    return ai_available()
+
+
+async def call_translation_llm(messages: list, json_mode: bool = False, temperature: float = 0.2, max_tokens: int = 2048) -> str:
+    """Translation-only entry point — thin wrapper around call_llm().
+    translation.py calls this instead of call_llm() directly, unchanged
+    from before.
+
+    max_tokens defaults to 2048 here (vs call_llm's 1024) because a
+    translation response has to fit BOTH the Japanese text AND its
+    romanization AND the surrounding JSON structure into one output — on a
+    longer character reply that can genuinely exceed 1024 tokens, which was
+    silently truncating output mid-JSON and corrupting the parse (falling
+    through to the regex-based fallback extractor, which can only return
+    whatever fragment made it through before the cutoff). Keep this at
+    2048+ even though Gemini is gone — the truncation risk was always a
+    Groq/token-budget issue, not a Gemini one."""
+    return await call_llm(messages, json_mode=json_mode, temperature=temperature, max_tokens=max_tokens)
+
+
 async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm", language: str | None = None) -> str:
     """
     Speech-to-text via Groq's hosted Whisper (same client/key as call_llm).
@@ -95,13 +129,30 @@ async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm", lan
     return text.strip()
 
 
-async def call_llm(messages: list, json_mode: bool = False) -> str:
-    """Call the LLM (Groq) and return the raw text response, fences stripped."""
+async def call_llm(messages: list, json_mode: bool = False, temperature: float = 0.7, max_tokens: int = 1024) -> str:
+    """Call the LLM (Groq) and return the raw text response, fences stripped.
+
+    temperature defaults to 0.7 (good for creative character dialogue).
+    Callers doing precision work — translation, anything where consistent,
+    literal output matters more than variety — should pass a lower value
+    explicitly (translation.py uses ~0.2). Previously this was hardcoded to
+    0.7 for every call including translation, which fought against
+    translation fidelity: high temperature is exactly what you don't want
+    when the goal is "say precisely what this meant," not "say something
+    plausible and varied."
+
+    max_tokens defaults to 1024 (unchanged from before, so backend.py's
+    character-dialogue calls are unaffected) but is now overridable —
+    translation.py passes a higher value via call_translation_llm(), since
+    a translation response has to fit the Japanese text, its romanization,
+    and the JSON structure into one output, which was silently exceeding
+    the old hardcoded 1024 on longer replies and truncating mid-response.
+    """
     if not ai_available():
         raise RuntimeError("No GROQ_API_KEY set in .env file")
 
     loop = asyncio.get_event_loop()
-    kwargs = {"model": GROQ_MODEL, "messages": messages, "max_tokens": 1024, "temperature": 0.7}
+    kwargs = {"model": GROQ_MODEL, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 

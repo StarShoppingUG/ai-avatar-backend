@@ -124,7 +124,7 @@ app = FastAPI(title="AI Avatar Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://ai-avatar-ui-ghost.vercel.app"],
+    allow_origins=["https://ai-avatar-ui-ghost.vercel.app", "https://ai-dojo-prototype-ghost.vercel.app"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -533,7 +533,11 @@ async def ask_avatar(
                            character_name=request.character_name)
     reply_en = behavior.get("reply", "...")
 
-    translation = await translate_to_japanese(reply_en)
+    translation = await translate_to_japanese(
+        reply_en,
+        character_name=request.character_name,
+        persona=request.avatar_persona,
+    )
     reply_ja = translation.get("japanese", "")
     romanization = translation.get("romanization", "")
 

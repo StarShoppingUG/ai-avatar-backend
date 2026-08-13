@@ -4,9 +4,9 @@ import json
 import logging
 
 try:
-    from .ai import call_llm, ai_available
+    from .ai import call_llm, ai_available, call_translation_llm, translation_ai_available
 except ImportError:
-    from ai import call_llm, ai_available
+    from ai import call_llm, ai_available, call_translation_llm, translation_ai_available
 
 logger = logging.getLogger(__name__)
 
@@ -419,16 +419,25 @@ def _parse_translation_json(raw: str):
 # FALLBACK TRANSLATION (NON-JSON)
 # ---------------------------------------------------------------------
 
-async def _translate_without_json(text: str) -> dict | None:
+async def _translate_without_json(text: str, character_name: str = None, persona: str = None) -> dict | None:
     """
     Plain-text fallback when JSON mode fails.
     """
 
     try:
+        context_block = ""
+        if character_name or persona:
+            context_lines = ["", "Context (for disambiguation only — translate ONLY the line below, do not translate this context):"]
+            if character_name:
+                context_lines.append(f"- Speaker: {character_name}")
+            if persona:
+                context_lines.append(f"- Speaker's persona: {persona}")
+            context_block = "\n".join(context_lines) + "\n"
 
         prompt = (
             "You are a professional native Japanese translator.\n\n"
-            "Translate the user's English text into NATURAL Japanese.\n\n"
+            "Translate the user's English text into NATURAL Japanese.\n"
+            f"{context_block}\n"
             "Rules:\n"
             "- Preserve the exact meaning.\n"
             "- Use grammatically correct Japanese.\n"
@@ -442,7 +451,7 @@ async def _translate_without_json(text: str) -> dict | None:
             "Line 2: Romaji\n"
         )
 
-        response = await call_llm(
+        response = await call_translation_llm(
             [
                 {
                     "role": "system",
@@ -454,6 +463,7 @@ async def _translate_without_json(text: str) -> dict | None:
                 },
             ],
             json_mode=False,
+            temperature=0.2,
         )
 
         response = response.strip()
@@ -543,17 +553,17 @@ async def _translate_without_json(text: str) -> dict | None:
 # CACHE
 # ---------------------------------------------------------------------
 
-def _get_from_cache(text: str):
-    key = f"en_ja:{text[:_MAX_TRANSLATE_CHARS]}"
+def _get_from_cache(text: str, character_name: str = None):
+    key = f"en_ja:{character_name or ''}:{text[:_MAX_TRANSLATE_CHARS]}"
     return _translation_cache.get(key)
 
 
-def _save_to_cache(text: str, result: dict):
+def _save_to_cache(text: str, result: dict, character_name: str = None):
     if len(_translation_cache) >= _MAX_CACHE_SIZE:
         oldest = next(iter(_translation_cache))
         del _translation_cache[oldest]
 
-    key = f"en_ja:{text[:_MAX_TRANSLATE_CHARS]}"
+    key = f"en_ja:{character_name or ''}:{text[:_MAX_TRANSLATE_CHARS]}"
     _translation_cache[key] = result
 
 
@@ -561,9 +571,9 @@ def _save_to_cache(text: str, result: dict):
 # MAIN TRANSLATOR
 # ---------------------------------------------------------------------
 
-async def translate_to_japanese(text: str) -> dict:
+async def translate_to_japanese(text: str, character_name: str = None, persona: str = None) -> dict:
 
-    if not ai_available():
+    if not translation_ai_available():
         return {
             "japanese": text,
             "romanization": "",
@@ -581,15 +591,30 @@ async def translate_to_japanese(text: str) -> dict:
             "romanization": "",
         }
 
-    cached = _get_from_cache(text)
+    cached = _get_from_cache(text, character_name)
     if cached:
         return cached
 
-    prompt = """
+    # Context block, only included when the caller has it — without this,
+    # the translator sees nothing but a bare sentence, which is a common
+    # source of drift on ambiguous pronouns or tone-dependent phrasing
+    # (e.g. a line's politeness level or implied subject depending on who's
+    # speaking to whom). Optional and additive: omitting character_name/
+    # persona degrades gracefully to the old context-free behavior.
+    context_block = ""
+    if character_name or persona:
+        context_lines = ["", "Context (for disambiguation only — translate ONLY the line below, do not translate this context):"]
+        if character_name:
+            context_lines.append(f"- Speaker: {character_name}")
+        if persona:
+            context_lines.append(f"- Speaker's persona: {persona}")
+        context_block = "\n".join(context_lines) + "\n"
+
+    prompt = f"""
 You are a PROFESSIONAL NATIVE JAPANESE TRANSLATOR.
 
 Translate the user's English into natural Japanese.
-
+{context_block}
 Requirements
 - Preserve the meaning exactly.
 - Maintain absolute factual accuracy with political and institutional titles (e.g., ensure "President" is translated as 大統領 and "Prime Minister" as 首相/総理大臣—never mix them up).
@@ -602,15 +627,15 @@ Requirements
 - Return ONLY valid JSON.
 
 Example
-{
+{{
  "japanese":"私は毎日日本語を勉強しています。",
  "romanization":"Watashi wa mainichi nihongo o benkyou shiteimasu."
-}
+}}
 """
 
     for attempt, json_mode_flag in enumerate((False, True), start=1):
         try:
-            raw = await call_llm(
+            raw = await call_translation_llm(
                 [
                     {
                         "role": "system",
@@ -622,6 +647,11 @@ Example
                     },
                 ],
                 json_mode=json_mode_flag,
+                # Low, not zero — leaves a little room for natural phrasing
+                # while prioritizing fidelity over variety. Was implicitly
+                # 0.7 (ai.py's old hardcoded default), which is tuned for
+                # creative dialogue, not translation.
+                temperature=0.2,
             )
 
             parsed = _parse_translation_json(raw)
@@ -670,7 +700,7 @@ Example
             _save_to_cache(text, {
                 "japanese": japanese,
                 "romanization": romaji,
-            })
+            }, character_name)
             logger.info("Translation succeeded.")
             return {
                 "japanese": japanese,
@@ -685,10 +715,10 @@ Example
             )
 
     logger.info("Trying fallback translator...")
-    fallback = await _translate_without_json(text)
+    fallback = await _translate_without_json(text, character_name, persona)
 
     if fallback:
-        _save_to_cache(text, fallback)
+        _save_to_cache(text, fallback, character_name)
         return fallback
 
     # When translation fails entirely, return the original English text as the Japanese fallback,
@@ -710,7 +740,7 @@ async def translate_to_english(text: str) -> str:
     Returns clean English text only.
     """
 
-    if not ai_available():
+    if not translation_ai_available():
         return text
 
     if not text or not text.strip():
@@ -738,7 +768,7 @@ Rules
 """
 
     try:
-        result = await call_llm(
+        result = await call_translation_llm(
             [
                 {
                     "role": "system",
@@ -750,6 +780,7 @@ Rules
                 },
             ],
             json_mode=False,
+            temperature=0.2,
         )
 
         english = result.strip()
