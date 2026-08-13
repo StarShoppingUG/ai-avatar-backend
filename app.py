@@ -128,6 +128,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+print(f"🔍 CORS allow_origins active: {['https://ai-avatar-ui-ghost.vercel.app', 'https://ai-dojo-prototype-ghost.vercel.app']}")
 
 os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
