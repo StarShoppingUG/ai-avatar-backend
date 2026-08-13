@@ -136,6 +136,9 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.on_event("startup")
 def _on_startup():
     init_db()
+    for mw in app.user_middleware:
+        if mw.cls.__name__ == "CORSMiddleware":
+            print(f"🔍 CORS raw options: {mw.options}", flush=True)
 
 # ==========================================
 # 5. BEHAVIOR JSON PARSING
