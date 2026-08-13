@@ -19,7 +19,12 @@ if DATABASE_URL:
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
     # check_same_thread is a SQLite-only connect arg — Postgres doesn't
     # understand it and errors if passed.
-    engine = create_engine(DATABASE_URL, echo=False)
+    engine = create_engine(
+        DATABASE_URL,
+        echo=False,
+        pool_pre_ping=True,
+        pool_recycle=1800,
+    )
 else:
     DB_PATH = os.environ.get("DATABASE_PATH", "./avatar_app.db")
     _db_dir = os.path.dirname(os.path.abspath(DB_PATH))
