@@ -48,6 +48,22 @@ def get_user_id(
     app_id = (x_app_id or "default").strip() or "default"
     return f"{app_id}::{x_user_id.strip()}"
 
+def get_user_id_optional(
+    x_user_id: Optional[str] = Header(default=None),
+    x_app_id: Optional[str] = Header(default=None),
+) -> Optional[str]:
+    """Same identity-string construction as get_user_id(), but never raises.
+    For routes like /settings where whether user_id is actually needed
+    depends on scope (X-Settings-Scope) — scope=app never touches user_id
+    at all, so requiring X-User-Id at the dependency level 400s app-scoped
+    requests before the route body even gets to check scope. Callers that
+    need user_id (scope=user) are responsible for raising themselves if
+    this comes back None."""
+    if not x_user_id or not x_user_id.strip():
+        return None
+    app_id = (x_app_id or "default").strip() or "default"
+    return f"{app_id}::{x_user_id.strip()}"
+
 def get_app_id(x_app_id: Optional[str] = Header(default=None)) -> str:
     """App-level identity only, no user component — used for AppSettings."""
     return (x_app_id or "default").strip() or "default"
@@ -128,7 +144,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-print(f"🔍 CORS allow_origins active: {['https://ai-avatar-ui-ghost.vercel.app', 'https://ai-dojo-prototype-ghost.vercel.app']}")
+
 
 os.makedirs("static", exist_ok=True)
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -702,12 +718,14 @@ def get_settings(
     scope: str = Depends(get_settings_scope),
     app_id: str = Depends(get_app_id),
     settings_group: str = Depends(get_settings_group),
-    user_id: str = Depends(get_user_id),
+    user_id: Optional[str] = Depends(get_user_id_optional),
     session: Session = Depends(get_session),
 ):
     if scope == "app":
         row = session.get(AppSettings, (app_id, settings_group))
     else:
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Missing X-User-Id header")
         row = session.get(UserSettings, user_id)
     if row is None:
         return {"ui_language": "en", "response_language": "ja", "last_avatar": None, "persona_overrides": {}}
@@ -728,7 +746,7 @@ def save_settings(
     scope: str = Depends(get_settings_scope),
     app_id: str = Depends(get_app_id),
     settings_group: str = Depends(get_settings_group),
-    user_id: str = Depends(get_user_id),
+    user_id: Optional[str] = Depends(get_user_id_optional),
     session: Session = Depends(get_session),
 ):
     if scope == "app":
@@ -737,6 +755,8 @@ def save_settings(
             row = AppSettings(app_id=app_id, settings_group=settings_group)
             session.add(row)
     else:
+        if not user_id:
+            raise HTTPException(status_code=400, detail="Missing X-User-Id header")
         row = session.get(UserSettings, user_id)
         if row is None:
             row = UserSettings(user_id=user_id)

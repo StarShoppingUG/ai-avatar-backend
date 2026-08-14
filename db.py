@@ -11,6 +11,12 @@ from sqlalchemy import Column, DateTime, text, inspect
 # so local dev without any DB configured still works exactly as before.
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 
+# TEMP DIAGNOSTIC — see HANDOFF2.md open bug (CharacterCard infinite loading
+# on back-nav). Confirms which engine path Railway's deployed container
+# actually takes, since this can silently diverge from source if
+# DATABASE_URL isn't reaching the container. Remove once confirmed.
+print(f"🔍 DB backend: {'postgres' if DATABASE_URL else 'sqlite-fallback'}")
+
 if DATABASE_URL:
     # Neon (and some other providers) hand out URLs starting with
     # "postgres://", which SQLAlchemy's psycopg2 dialect no longer accepts —
