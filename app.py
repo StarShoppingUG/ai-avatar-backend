@@ -117,8 +117,7 @@ app = FastAPI(title="AI Avatar Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    #allow_origins=["https://ai-avatar-ui-ghost.vercel.app", "https://ai-dojo-prototype-ghost.vercel.app"],
-    allow_origins=["*"],
+    allow_origins=["https://ai-avatar-ui-ghost.vercel.app", "https://ai-dojo-prototype-ghost.vercel.app"],
     allow_methods=["*"],
     allow_headers=["*"],
 )

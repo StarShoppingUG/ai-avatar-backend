@@ -83,35 +83,14 @@ class UserSettings(SQLModel, table=True):
     ui_language: Optional[str] = "en"
     response_language: Optional[str] = "ja"
     last_avatar: Optional[str] = None
-    # JSON-serialized dict, e.g. '{"slot-1::female_ug": {"name": "...", "persona": "...", "personaJa": "..."}}'
-    # Stored as text (SQLite/most SQLAlchemy backends have no native dict
-    # column) — save_settings()/get_settings() in main.py handle the
-    # json.dumps/json.loads at the API boundary, so this column never holds
-    # anything but a plain string or None.
+
     persona_overrides: Optional[str] = None
 
 
 class AppSettings(SQLModel, table=True):
-    """Same shape as UserSettings, but keyed on app_id alone — for
-    integrators who want every user of their app to share one settings row
-    (last_avatar, languages, persona edits) instead of per-browser
-    isolation. Selected via the X-Settings-Scope: app header — see
-    get_settings_scope() in app.py. UserSettings (per-browser/UUID, the
-    original behavior) is untouched above and remains the default when
-    that header is absent."""
+
     app_id: str = Field(primary_key=True)
-    # Second scoping dimension alongside app_id — lets one app_id (one
-    # integrator/tenant) share settings per some sub-grouping (e.g. a
-    # "character" = scenario + avatar combo) instead of forcing every
-    # scope=app user of that app_id onto a single shared row. Selected via
-    # the X-Settings-Group header — see get_settings_group() in app.py.
-    # Defaults to "" so any existing scope=app usage that never sends this
-    # header keeps landing on the same row it always has (app_id, "").
-    # Composite primary key with app_id — see _migrate_app_settings_group()
-    # below for how this is rolled onto an already-existing table (the
-    # generic add-missing-column migration can't handle this on its own:
-    # it only adds columns, it never changes which columns make up the
-    # primary key).
+
     settings_group: str = Field(default="", primary_key=True)
     ui_language: Optional[str] = "en"
     response_language: Optional[str] = "ja"
@@ -126,17 +105,7 @@ def init_db() -> None:
 
 
 def _migrate_missing_columns() -> None:
-    """
-    create_all() only creates tables that don't exist yet — it never alters
-    a table that's already there. If a field gets added to a model (like
-    `last_avatar` on UserSettings) after avatar_app.db already exists on
-    disk, the running code expects a column the actual file doesn't have,
-    and every query touching it throws "no such column: <field>" — silently,
-    since callers here catch/swallow that error. This walks every SQLModel
-    table, diffs its Python columns against what's actually in the SQLite
-    file, and ALTERs in whatever is missing so existing databases catch up
-    without anyone having to delete/recreate the file by hand.
-    """
+
     inspector = inspect(engine)
     with engine.begin() as conn:
         for table_name, table in SQLModel.metadata.tables.items():
@@ -154,26 +123,7 @@ def _migrate_missing_columns() -> None:
 
 
 def _migrate_app_settings_group() -> None:
-    """
-    Unlike _migrate_missing_columns() above (which only ever ADDs a
-    column), this handles a schema change that column-add alone can't
-    cover: AppSettings' primary key is changing from app_id alone to the
-    composite (app_id, settings_group). A table created before this
-    change exists on disk with app_id as its only PK column and no
-    settings_group column at all — _migrate_missing_columns() will have
-    just added settings_group as a plain nullable column with no default,
-    but the primary key itself is untouched by that pass, so two rows for
-    the same app_id under different settings_group values would still
-    collide (session.get(AppSettings, app_id) / merge-by-PK would treat
-    them as the same row). This function is what actually finishes the
-    job: backfills any NULL settings_group to "" (the same default new
-    rows get), then swaps the primary key constraint to the composite
-    form. Safe to run every startup — it checks the current PK columns
-    first and does nothing once a table is already on the composite key
-    (including a table that never existed before this change and was
-    therefore created by create_all() with the composite key from day
-    one, in which case there's nothing to do here at all).
-    """
+
     table_name = AppSettings.__tablename__
     inspector = inspect(engine)
     if not inspector.has_table(table_name):
@@ -211,21 +161,10 @@ def _migrate_app_settings_group() -> None:
                 f'ALTER TABLE "{table_name}" ADD PRIMARY KEY (app_id, settings_group)'
             ))
         elif dialect == "sqlite":
-            # SQLite has no ALTER TABLE support for dropping/adding a
-            # primary key constraint (or for adding NOT NULL to an
-            # existing column) — the only way to change a table's PK is
-            # to rebuild it: create a new table with the target schema,
-            # copy the (now-backfilled) rows across, drop the old table,
-            # rename the new one into place.
+
             tmp_name = f"{table_name}_new"
             conn.execute(text(f'DROP TABLE IF EXISTS "{tmp_name}"'))
-            # Raw DDL rather than reflecting AppSettings.__table__ into a
-            # renamed copy — keeps this independent of SQLAlchemy-version
-            # differences in the Table-copy API, and matches the plain
-            # text()-based approach _migrate_missing_columns() already
-            # uses elsewhere in this file. Column types match the other
-            # text/optional-string columns on this model (see UserSettings
-            # above, which the same columns are modeled after).
+
             conn.execute(text(
                 f'CREATE TABLE "{tmp_name}" ('
                 f'app_id VARCHAR NOT NULL, '
