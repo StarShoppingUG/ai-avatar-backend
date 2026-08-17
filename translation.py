@@ -464,6 +464,7 @@ async def _translate_without_json(text: str, character_name: str = None, persona
             ],
             json_mode=False,
             temperature=0.2,
+            reasoning_effort="low",
         )
 
         response = response.strip()
@@ -652,6 +653,7 @@ Example
                 # 0.7 (ai.py's old hardcoded default), which is tuned for
                 # creative dialogue, not translation.
                 temperature=0.2,
+                reasoning_effort="low",
             )
 
             parsed = _parse_translation_json(raw)
@@ -781,6 +783,7 @@ Rules
             ],
             json_mode=False,
             temperature=0.2,
+            reasoning_effort="low",
         )
 
         english = result.strip()
