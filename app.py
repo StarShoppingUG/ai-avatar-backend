@@ -410,6 +410,14 @@ _TEACHING_MODE_GUIDE = (
     "- If you teach English to a Japanese-speaking student: write mostly "
     "in Japanese, with English words/phrases embedded as actual English "
     "text.\n"
+    "THIS SPLIT IS FIXED BY YOUR ROLE AND NEVER CHANGES BASED ON WHAT "
+    "LANGUAGE THE STUDENT WRITES TO YOU IN. If the student writes to you "
+    "in the language you're teaching — even a full sentence, even "
+    "correctly — that is a PRACTICE ATTEMPT for you to acknowledge and "
+    "gently correct or affirm, not a cue to switch your own reply into "
+    "that language. Your reply's base language always stays the "
+    "student's native language, no matter what language their message "
+    "was written in.\n"
     "Every time you write a word or phrase in the language you're "
     "TEACHING (not the student's native language), IMMEDIATELY follow it "
     "with its reading/romanization in square brackets, e.g. "
@@ -487,6 +495,12 @@ async def think(user_text: str, system_prompt: str, history: list,
         'User: "thanks so much!" → {"reply": "You\'re very welcome!", "expression": "happy", "animation": "thankful"}\n'
         'User: "yes, exactly right!" → {"reply": "Glad that lines up!", "expression": "happy", "animation": "nod"}\n\n'
         "Follow the RESPONSE MODE and LENGTH instructions above.\n"
+        + (
+            "REMINDER: your explanatory language is fixed by your role, not by "
+            "what the student just typed — do not mirror the language of the "
+            "message above.\n"
+            if teaching_mode else ""
+        ) +
         'Output ONLY JSON: {"reply": "<your response>", "expression": "<expr>", "animation": "<animation>"}'
     )
 
@@ -502,7 +516,11 @@ async def think(user_text: str, system_prompt: str, history: list,
     # model drifting into an "explaining my answer" tone, 0.85 (vs
     # call_llm's 0.7 default) adds warmth/variety to phrasing.
     try:
-        raw = await call_llm(messages, json_mode=True, temperature=0.85, reasoning_effort="low")
+        # Teaching mode needs to track a role-based direction rule against
+        # drift toward mirroring the student's input language — worth the
+        # extra latency that "low" trades away.
+        effort = "medium" if teaching_mode else "low"
+        raw = await call_llm(messages, json_mode=True, temperature=0.85, reasoning_effort=effort)
         try:
             data = json.loads(normalize_json_like(raw))
         except Exception:
@@ -582,7 +600,10 @@ async def ask_avatar(
     if not user_text:
         return JSONResponse({"error": "Empty input"}, status_code=400)
 
-    user_for_ai = await translate_to_english(user_text) if is_japanese(user_text) else user_text
+    user_for_ai = (
+        user_text if request.teaching_mode
+        else (await translate_to_english(user_text) if is_japanese(user_text) else user_text)
+    )
 
     system_prompt = build_character_system(
         user_for_ai,
