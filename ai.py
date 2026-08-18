@@ -13,11 +13,19 @@ load_dotenv()
 # LLM CONFIG & CLIENT (Groq, via the OpenAI-compatible API)
 # ==========================================
 def _normalize_groq_base_url(raw: str) -> str:
-
+    """
+    The OpenAI SDK just appends '/chat/completions' to base_url, so base_url
+    MUST be Groq's *API* host ('api.groq.com', not the marketing site
+    'groq.com') and end in '/openai/v1', or every request 405s. This
+    tolerates whatever people put in .env — bare host, the marketing domain,
+    trailing slash, already-correct value, etc — and always resolves to the
+    one URL shape that actually works.
+    """
     url = (raw or "").strip().rstrip("/")
     if not url:
         return "https://api.groq.com/openai/v1"
-
+    # Common mix-up: the marketing site (groq.com) instead of the API host
+    # (api.groq.com) — same domain minus the 'api.' subdomain.
     url = re.sub(r"://(?:www\.)?groq\.com", "://api.groq.com", url)
     if url.endswith("/openai/v1") or url.endswith("/chat/completions"):
         return url
@@ -28,12 +36,6 @@ GROQ_API_KEY  = os.environ.get("GROQ_API_KEY", "").strip()
 GROQ_MODEL    = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 GROQ_BASE_URL = _normalize_groq_base_url(os.environ.get("GROQ_BASE_URL", "https://api.groq.com"))
 
-# Used only for turns that need live/current info (see _NEEDS_LIVE_INFO_PAT
-# in app.py's think()) — compound-mini can call a web search tool itself,
-# unlike GROQ_MODEL above. Kept as a separate override (not just swapping
-# GROQ_MODEL globally) because compound systems have tighter rate limits
-# and higher latency than a bare text model, so they're only worth paying
-# for on the turns that actually need current data.
 GROQ_COMPOUND_MODEL = os.environ.get("GROQ_COMPOUND_MODEL", "groq/compound-mini")
 
 
@@ -58,9 +60,9 @@ def translation_ai_available() -> bool:
     return ai_available()
 
 
-async def call_translation_llm(messages: list, json_mode: bool = False, temperature: float = 0.2, max_tokens: int = 2048) -> str:
+async def call_translation_llm(messages: list, json_mode: bool = False, temperature: float = 0.2, max_tokens: int = 2048, reasoning_effort: str | None = None) -> str:
 
-    return await call_llm(messages, json_mode=json_mode, temperature=temperature, max_tokens=max_tokens)
+    return await call_llm(messages, json_mode=json_mode, temperature=temperature, max_tokens=max_tokens, reasoning_effort=reasoning_effort)
 
 
 async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm", language: str | None = None) -> str:
@@ -87,7 +89,7 @@ async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm", lan
 
 
 async def call_llm(messages: list, json_mode: bool = False, temperature: float = 0.7, max_tokens: int = 1024, reasoning_effort: str | None = None, model: str | None = None) -> str:
-
+    
     if not ai_available():
         raise RuntimeError("No GROQ_API_KEY set in .env file")
 
