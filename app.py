@@ -282,9 +282,9 @@ def word_to_viseme_sequence(word: str) -> list:
         sequence.append("aa")
     return sequence[:MAX_VISEMES_PER_WORD]
 
-async def generate_tts_with_visemes(text: str, voice: str, output_path: str) -> list:
+async def generate_tts_with_visemes(text: str, voice: str, output_path: str, rate: str = "+0%") -> list:
     events = []
-    communicate = edge_tts.Communicate(text, voice, boundary="WordBoundary")
+    communicate = edge_tts.Communicate(text, voice, rate=rate, boundary="WordBoundary")
     chunks = []
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
@@ -314,7 +314,7 @@ async def generate_tts_with_visemes(text: str, voice: str, output_path: str) -> 
         timeline.append({"t": timeline[-1]["t"] + 300, "v": "sil"})
     return timeline
 
-async def safe_tts(text: str, voice: str, path: str) -> tuple:
+async def safe_tts(text: str, voice: str, path: str, rate: str = "+0%") -> tuple:
     """Returns (visemes, generated). generated=False means no audio file was
     written for this call — either there was nothing worth saying, or the TTS
     request itself failed. Callers must key off `generated`, not
@@ -326,7 +326,7 @@ async def safe_tts(text: str, voice: str, path: str) -> tuple:
     if not clean or clean in ("...", "…", "."):
         return [], False
     try:
-        visemes = await generate_tts_with_visemes(clean, voice, path)
+        visemes = await generate_tts_with_visemes(clean, voice, path, rate=rate)
         # Guard against a "successful" call that didn't actually produce a
         # readable file (e.g. edge-tts returned zero audio chunks) — better
         # to fall back to no-audio than hand back a URL that 404s.
@@ -358,10 +358,25 @@ _DIRECT_PAT = re.compile(
     r"tell me|explain|define|give me|translate|what's|who's)\b", re.I
 )
 
-def _wrap_prompt(system_prompt: str, intent: str, character_name: str) -> str:
+def _wrap_prompt(system_prompt: str, intent: str, character_name: str, teaching_mode: bool = False) -> str:
     date_context = _get_current_date_context()
 
-    if intent == "direct":
+    if teaching_mode:
+        # Overrides the direct/general split below — a "how do I say X"
+        # question matches _DIRECT_PAT and would otherwise get capped at
+        # MAX 60 WORDS / "be concise", which is exactly why teaching
+        # replies were coming back as a bare phrase with no instruction.
+        mode = (
+            "RESPONSE MODE — TEACHING ANSWER: Never just state a translation or phrase on its "
+            "own — actually teach it. Every answer should include: (1) the word/phrase itself, "
+            "properly formatted per the bracket rule below, (2) a short, natural note on how or "
+            "when it's actually used (politeness level, context, common situation), and (3) one "
+            "short example sentence using it naturally. Then invite the learner to try repeating "
+            "it back, or ask a quick follow-up question to keep the lesson moving — don't just "
+            "end on the fact. Keep the tone warm and conversational, like a real tutor talking, "
+            "not a bullet-point dictionary entry. 60–100 WORDS.\n\n"
+        )
+    elif intent == "direct":
         mode = ("RESPONSE MODE — DIRECT ANSWER: Answer clearly and helpfully. "
                 "Keep it concise and practical. MAX 60 WORDS — be concise.\n\n")
     else:
@@ -369,6 +384,44 @@ def _wrap_prompt(system_prompt: str, intent: str, character_name: str) -> str:
                 "Be warm, clear, and useful. 80–120 WORDS.\n\n")
 
     return date_context + mode + system_prompt
+
+# Only appended when AskRequest.teaching_mode is true. Deliberately does
+# NOT name which language is being taught or who the student is — that
+# direction lives entirely in the avatar's own persona (see
+# AvatarSources.js, e.g. "You teach Japanese to English-speaking
+# learners"). This guide only adds the MECHANICAL formatting/tone rules
+# that apply either direction, so the same guide works for a
+# Japanese-teaching avatar and an English-teaching avatar without change.
+_TEACHING_MODE_GUIDE = (
+    "═══════════════════════════════════════════════════════\n"
+    "TEACHING MODE\n"
+    "═══════════════════════════════════════════════════════\n"
+    "You are actively teaching a language, per your identity above. Your "
+    "identity states which language you teach and which language your "
+    "student speaks natively — follow that direction precisely, even "
+    "though the rest of this system prompt and the conversation history "
+    "are written in English. Do NOT default to writing mostly in English "
+    "just because this instruction is in English.\n"
+    "The EXPLANATORY portions of your reply (context, grammar notes, "
+    "encouragement, small talk) should be written in your STUDENT's native "
+    "language, not automatically in English. Concretely:\n"
+    "- If you teach Japanese to an English-speaking student: write mostly "
+    "in English, with Japanese words/phrases embedded in Japanese script.\n"
+    "- If you teach English to a Japanese-speaking student: write mostly "
+    "in Japanese, with English words/phrases embedded as actual English "
+    "text.\n"
+    "Every time you write a word or phrase in the language you're "
+    "TEACHING (not the student's native language), IMMEDIATELY follow it "
+    "with its reading/romanization in square brackets, e.g. "
+    "ありがとうございます[arigatou gozaimasu] when teaching Japanese, or "
+    "hello[ハロー] when teaching English to a Japanese speaker. Use this "
+    "exact bracket format every time — it's read separately from the word "
+    "itself, so never skip it and never use parentheses or another style "
+    "of bracket for this purpose.\n"
+    "Keep explanations short and natural — you're having a conversation, "
+    "not reciting a textbook entry.\n"
+    "═══════════════════════════════════════════════════════\n\n"
+)
 
 _MEMORY_CONTEXT = (
     "═══════════════════════════════════════════════════════\n"
@@ -389,7 +442,7 @@ _MEMORY_CONTEXT = (
 
 
 async def think(user_text: str, system_prompt: str, history: list,
-                character_name: str = None) -> dict:
+                character_name: str = None, teaching_mode: bool = False) -> dict:
     if not ai_available():
         beh = sentiment_behavior(user_text)
 
@@ -398,10 +451,11 @@ async def think(user_text: str, system_prompt: str, history: list,
                 "expression": beh["expression"], "animation": "offline", "_fallback": True}
 
     intent = "direct" if _DIRECT_PAT.search(user_text) or len(user_text.split()) <= 4 else "general"
-    wrapped = _wrap_prompt(system_prompt, intent, character_name or "")
+    wrapped = _wrap_prompt(system_prompt, intent, character_name or "", teaching_mode=teaching_mode)
 
     full_system = (
         f"{_MEMORY_CONTEXT}"
+        f"{_TEACHING_MODE_GUIDE if teaching_mode else ''}"
         f"{wrapped}\n\n"
         "You also direct a 3D avatar's face and body. Pick the expression and animation "
         "that actually match the moment — don't default to neutral/talk out of habit:\n"
@@ -492,6 +546,10 @@ class AskRequest(BaseModel):
     voice_ja: Optional[str] = None
     speak_language: Optional[str] = "en"
     timezone: Optional[str] = None
+    # Set by the frontend for language-tutor avatars (e.g. Tokyo/Hikaru) —
+    # switches /ask to a single mixed-language reply + single TTS pass
+    # instead of the normal English reply + separate JA translation/track.
+    teaching_mode: Optional[bool] = False
 
 class VoiceRequest(BaseModel):
     text: str
@@ -559,31 +617,65 @@ async def ask_avatar(
     history = [{"role": h.role, "content": h.content or ""} for h in own_turns[-20:]]
 
     behavior = await think(user_for_ai, system_prompt, history,
-                           character_name=request.character_name)
+                           character_name=request.character_name,
+                           teaching_mode=request.teaching_mode)
     reply_en = behavior.get("reply", "...")
 
-    translation = await translate_to_japanese(
-        reply_en,
-        character_name=request.character_name,
-        persona=request.avatar_persona,
-    )
-    reply_ja = translation.get("japanese", "")
-    romanization = translation.get("romanization", "")
+    if request.teaching_mode:
+        # The model already wrote one mixed-language reply — there's
+        # nothing to translate, and only one audio track to generate.
+        reply_ja = reply_en
+        romanization = ""
 
-    en_voice = resolve_voice(request.voice_en, use_japanese=False)
-    ja_voice = resolve_voice(request.voice_ja, use_japanese=True)
+        # Both set to the same resolved voice — teaching-mode avatars use
+        # one Multilingual voice for both fields (see AvatarSources.js) —
+        # and en_voice/ja_voice must exist here too since the final
+        # response dict below references them unconditionally regardless
+        # of which branch ran.
+        en_voice = resolve_voice(request.voice_en, use_japanese=False)
+        ja_voice = en_voice
 
-    en_name = next_audio_name("temp_en")
-    ja_name = next_audio_name("temp_ja")
-    en_path = os.path.join("static", en_name)
-    ja_path = os.path.join("static", ja_name)
+        # Strip the [romaji] brackets before TTS so the voice doesn't say
+        # each Japanese word twice (once in kana, once as literal roman
+        # letters) — the bracketed text stays in reply_en/reply_ja for the
+        # frontend to caption, just not in what's actually spoken.
+        speech_text = re.sub(r"\[[^\]]*\]", "", reply_en)
 
-    visemes_en, en_generated = await safe_tts(reply_en, en_voice, en_path)
-    visemes_ja, ja_generated = await safe_tts(reply_ja, ja_voice, ja_path)
+        audio_name = next_audio_name("temp_teach")
+        audio_path = os.path.join("static", audio_name)
+        # Slower than normal conversational pace — a language learner
+        # needs to actually catch the words, especially the Japanese
+        # portions, not just hear a natural-speed sentence blur past.
+        visemes, generated = await safe_tts(speech_text, en_voice, audio_path, rate="-20%")
 
-    audio_url_en = f"/static/{en_name}" if en_generated else ""
-    audio_url_ja = f"/static/{ja_name}" if ja_generated else ""
-    final_audio_url = audio_url_ja if primary == "ja" else audio_url_en
+        final_audio_url = f"/static/{audio_name}" if generated else ""
+        audio_url_en = final_audio_url
+        audio_url_ja = final_audio_url
+        visemes_en = visemes
+        visemes_ja = visemes
+    else:
+        translation = await translate_to_japanese(
+            reply_en,
+            character_name=request.character_name,
+            persona=request.avatar_persona,
+        )
+        reply_ja = translation.get("japanese", "")
+        romanization = translation.get("romanization", "")
+
+        en_voice = resolve_voice(request.voice_en, use_japanese=False)
+        ja_voice = resolve_voice(request.voice_ja, use_japanese=True)
+
+        en_name = next_audio_name("temp_en")
+        ja_name = next_audio_name("temp_ja")
+        en_path = os.path.join("static", en_name)
+        ja_path = os.path.join("static", ja_name)
+
+        visemes_en, en_generated = await safe_tts(reply_en, en_voice, en_path)
+        visemes_ja, ja_generated = await safe_tts(reply_ja, ja_voice, ja_path)
+
+        audio_url_en = f"/static/{en_name}" if en_generated else ""
+        audio_url_ja = f"/static/{ja_name}" if ja_generated else ""
+        final_audio_url = audio_url_ja if primary == "ja" else audio_url_en
 
     # A fallback reply (LLM unavailable/erroring) isn't a real exchange — the
     # avatar didn't actually understand or respond to what the user said, so

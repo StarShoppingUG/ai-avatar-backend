@@ -4,13 +4,13 @@ This is the high-performance FastAPI backend engine for the AI Avatar system. It
 
 ## Features
 
-- **Groq LPU Acceleration** — Leverages high-speed inference via [Groq](https://groq.com/) for Llama conversational generation and Whisper audio transcriptions.
+- **Groq LPU Acceleration** — Leverages high-speed inference via [Groq](https://groq.com/) for conversational generation and Whisper audio transcriptions.
 - **Persistent Storage** — Chat history and per-user settings are stored via SQLModel, backed by Postgres (recommended for production — see [Database](#database)) or a local SQLite file for development.
 - **Multi-Tenant Identity** — Every request is scoped by an `X-App-Id` (which third-party app/deployment) + `X-User-Id` (which of that app's end-users) pair, so multiple integrators can embed the same backend without their users' data colliding — see [Identity & Multi-Tenancy](#identity--multi-tenancy).
 - **Configurable Settings Scoping** — Settings can be stored per-user (default) or per-app via `X-Settings-Scope`, with an optional `X-Settings-Group` dimension to further split app-scoped settings (e.g. per character/scenario within a single app) — see [Settings Scope: Per-App vs Per-User](#settings-scope-per-app-vs-per-user).
 - **On-The-Fly Translation Layer** — Seamlessly maps bilingual conversations. Translates incoming Japanese text to English for uniform LLM processing, then streams output shapes translated back to Japanese complete with custom phonetic romanization properties.
 - **Dual-Voice Audio & Viseme Synthesis** — Generates synchronized server-side `.mp3` audio tracks (`static/`) alongside granular viseme timeline matrices for exact mouth movements.
-- **Smart Pipeline Error Handling** — Rejects blank strings instantly and utilizes non-persisting placeholder mechanics during LLM downtime to protect long-term conversation history states from corruption.
+- **Smart Pipeline Error Handling** — Rejects blank strings instantly and utilizes non-persisting placeholder mechanics during LLM downtime to protect long-term conversation history states from corruption. Rate-limit errors from Groq are detected specifically and surfaced as a distinct "hit a rate limit, try again in X" message rather than the generic offline fallback, so users get an accurate reason instead of being told to just retry immediately.
 
 ## Project Structure
 
@@ -49,6 +49,8 @@ ai-avatar-backend/
     "primary": "en"
   }
 ```
+Accepts an optional `teaching_mode` boolean. When `true` (used by language-tutor avatars), the model produces a single reply that naturally mixes the taught language and the student's native language — words in the language being taught are inline-annotated with their reading/romanization in `[brackets]` — instead of generating a separate English reply plus a translated Japanese counterpart. In this mode `translated_reply` mirrors `reply`, `romanization` comes back empty, and `audio_url_en`/`audio_url_ja` both point to the same single generated audio track (synthesized once, with a slower speech rate for learners, after the `[bracket]` annotations are stripped out so they aren't spoken twice).
+
 * **`POST /voice`** — Standalone synthesis node. Generates precise audio URLs and phonetic viseme arrays for independent strings based on custom designated culture parameters (`en` or `ja`).
 
 ### 3. Audio & Text Processing
@@ -192,7 +194,7 @@ Create a `.env` file directly inside the root folder matching the parameters bel
 ```env
 GROQ_API_KEY=gsk_your_actual_groq_api_key
 GROQ_BASE_URL=https://api.groq.com/openai/v1
-GROQ_MODEL=llama-3.1-8b-instant or any other model
+GROQ_MODEL=openai/gpt-oss-120b or any other model
 GROQ_STT_MODEL=whisper-large-v3-turbo or any other stt model
 
 # Database — set this for persistent storage (Postgres). Omit it entirely
