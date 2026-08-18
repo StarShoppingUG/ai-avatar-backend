@@ -34,7 +34,16 @@ def get_user_id(
     x_user_id: Optional[str] = Header(default=None),
     x_app_id: Optional[str] = Header(default=None),
 ) -> str:
+    """Returns a scoped identity string combining tenant (app) and end-user,
+    e.g. "acme-corp::user-48213". This is what actually gets stored as
+    user_id everywhere (ChatMessage, UserSettings) — every existing query
+    that filters on user_id therefore already gets full per-app isolation
+    for free, with no schema changes and no query changes required.
 
+    x_app_id is optional for backward compatibility (older/solo frontends
+    that don't send it yet) and falls back to a shared "default" tenant —
+    matches CharacterBrain.js's own fallback behavior on the frontend.
+    """
     if not x_user_id or not x_user_id.strip():
         raise HTTPException(status_code=400, detail="Missing X-User-Id header")
     app_id = (x_app_id or "default").strip() or "default"
@@ -44,7 +53,13 @@ def get_user_id_optional(
     x_user_id: Optional[str] = Header(default=None),
     x_app_id: Optional[str] = Header(default=None),
 ) -> Optional[str]:
-
+    """Same identity-string construction as get_user_id(), but never raises.
+    For routes like /settings where whether user_id is actually needed
+    depends on scope (X-Settings-Scope) — scope=app never touches user_id
+    at all, so requiring X-User-Id at the dependency level 400s app-scoped
+    requests before the route body even gets to check scope. Callers that
+    need user_id (scope=user) are responsible for raising themselves if
+    this comes back None."""
     if not x_user_id or not x_user_id.strip():
         return None
     app_id = (x_app_id or "default").strip() or "default"
@@ -55,7 +70,16 @@ def get_app_id(x_app_id: Optional[str] = Header(default=None)) -> str:
     return (x_app_id or "default").strip() or "default"
 
 def get_settings_group(x_settings_group: Optional[str] = Header(default=None)) -> str:
-
+    """Second scoping dimension alongside app_id, for scope=app usage only
+    (see get_settings_scope() below). Lets one app_id share settings per
+    some sub-grouping (e.g. a "character" = scenario + avatar combo)
+    instead of forcing every scope=app user of that app_id onto a single
+    shared row. Defaults to "" when absent — matches AppSettings.settings_group's
+    default, so existing scope=app usage with no group set keeps landing
+    on the same row it always has. No trimming beyond that: unlike
+    x_app_id/x_user_id this is allowed to be an arbitrary opaque string an
+    integrator defines for their own use, not an identity that needs
+    normalizing."""
     return x_settings_group or ""
 
 def get_settings_scope(x_settings_scope: Optional[str] = Header(default=None)) -> str:
@@ -214,6 +238,15 @@ def pick_fallback_reply() -> str:
     _last_fallback_reply = choice
     return choice
 
+def pick_rate_limit_reply(error_text: str) -> str:
+    wait_match = re.search(r"try again in (?:(\d+)m)?([\d.]+)s", error_text)
+    if wait_match:
+        minutes = int(wait_match.group(1) or 0)
+        wait = f"about {minutes} minute{'s' if minutes != 1 else ''}" if minutes >= 1 else "a few seconds"
+    else:
+        wait = "a little while"
+    return f"I've hit Groq's rate limit and need to wait {wait} before I can reply again."
+
 # ── Viseme constants ──────────────────────────────────────────────────────
 VOWEL_VISEMES = {"a": "aa", "e": "ee", "i": "ih", "o": "oh", "u": "ou"}
 CONSONANT_VISEMES = {
@@ -305,6 +338,12 @@ async def safe_tts(text: str, voice: str, path: str) -> tuple:
         print(f"⚠️ TTS failed ({voice}): {e}")
         return [], False
 
+# ── Audio naming ──────────────────────────────────────────────────────────
+# UUID-based, not a shared counter — a counter is process-local (resets on
+# every --reload restart) and isn't safe under concurrent /ask calls, since
+# nothing prevents two overlapping requests from racing between "claim a
+# name" and "finish writing the file for that name." A UUID makes every
+# filename unique by construction, so there's nothing to race.
 def next_audio_name(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}.mp3"
 
@@ -319,12 +358,25 @@ _DIRECT_PAT = re.compile(
     r"tell me|explain|define|give me|translate|what's|who's)\b", re.I
 )
 
-
-_NEEDS_LIVE_INFO_PAT = re.compile(
+_NEEDS_LIVE_INFO_PAT_TIER1 = re.compile(
     r"\b(latest|breaking|up to date|up-to-date|as of (?:today|now)|"
-    r"weather|forecast|news|score|scores|who won|stock price|"
-    r"exchange rate|current price)\b", re.I
+    r"weather|forecast|news|score|scores|who won|stock price|stock market|"
+    r"exchange rate|current price|crypto price|bitcoin price|election|"
+    r"president|prime minister|champion|winner|reigning|world cup|"
+    r"olympics|super bowl|tournament results?)\b", re.I
 )
+_NEEDS_LIVE_INFO_PAT_TIER2 = re.compile(
+    r"\b(today|right now|currently|this week|this year|recently|"
+    r"these days|nowadays)\b", re.I
+)
+
+def _is_question(text: str) -> bool:
+    return "?" in text or bool(_DIRECT_PAT.search(text))
+
+def _needs_live_info(text: str) -> bool:
+    if _NEEDS_LIVE_INFO_PAT_TIER1.search(text):
+        return True
+    return bool(_NEEDS_LIVE_INFO_PAT_TIER2.search(text)) and _is_question(text)
 
 
 _LIVE_INFO_CACHE: dict = {}
@@ -382,18 +434,17 @@ _MEMORY_CONTEXT = (
     "═══════════════════════════════════════════════════════\n\n"
 )
 
-# Appended only to the system prompt on turns routed to compound — a
-# reminder that's redundant (and would just add noise) on the default
-# model, which never sees search results in the first place. Compound
-# folding a web search result into its answer is exactly the behavior we
-# want, but it can bring citation-style phrasing ("According to...",
-# naming a source/site) along with it, which reads as the model talking
-# ABOUT the answer rather than the character just knowing it.
+
 _COMPOUND_PERSONA_GUARD = (
-    "\n\nYou have access to live web search for this reply. Use it to get "
-    "the current fact, but weave it into your answer exactly like you'd "
-    "already know it — never say 'according to', name a website/source, "
-    "or describe the act of searching. State the fact plainly, in character, "
+    "\n\nYou have access to live web search for this reply — and for THIS "
+    "reply specifically, your own training knowledge may be outdated. "
+    "ALWAYS use the web search tool to verify before answering, even if "
+    "you feel confident you already know the answer — do not rely on "
+    "memory alone for anything time-sensitive (current events, scores, "
+    "results, prices, holders of a position, etc). Then weave the "
+    "verified fact into your answer exactly like you'd already know it — "
+    "never say 'according to', name a website/source, or describe the "
+    "act of searching. State the fact plainly, in character, "
     "the same way you'd answer anything else you know.\n"
 )
 
@@ -401,9 +452,7 @@ async def think(user_text: str, system_prompt: str, history: list,
                 character_name: str = None) -> dict:
     if not ai_available():
         beh = sentiment_behavior(user_text)
-        # The missing-API-key detail is useful to whoever's running the
-        # server, not to the person talking to the avatar — keep it in the
-        # server log and give the user the same natural fallback line.
+
         print("AI unavailable: GROQ_API_KEY is not set.")
         return {"reply": pick_fallback_reply(),
                 "expression": beh["expression"], "animation": "offline", "_fallback": True}
@@ -458,7 +507,7 @@ async def think(user_text: str, system_prompt: str, history: list,
     # not a reasoning task — low effort keeps latency down and avoids the
     # model drifting into an "explaining my answer" tone, 0.85 (vs
     # call_llm's 0.7 default) adds warmth/variety to phrasing.
-    needs_live_info = bool(_NEEDS_LIVE_INFO_PAT.search(user_text))
+    needs_live_info = _needs_live_info(user_text)
     live_info_cache_key = None
     raw = None  # set below by cache hit, compound call, or default call
     if needs_live_info:
@@ -526,7 +575,12 @@ async def think(user_text: str, system_prompt: str, history: list,
     except Exception as e:
         print(f"AI Think Error: {e}")
         beh = sentiment_behavior(user_text)
-        return {"reply": pick_fallback_reply(),
+        error_text = str(e)
+        if "rate_limit_exceeded" in error_text:
+            reply = pick_rate_limit_reply(error_text)
+        else:
+            reply = pick_fallback_reply()
+        return {"reply": reply,
                 "expression": beh["expression"], "animation": "offline", "_fallback": True}
 
 # ==========================================
@@ -580,7 +634,6 @@ async def ask_avatar(
         request.avatar_persona,
     )
 
-
     settings_row = session.get(AppSettings, (app_id, settings_group)) if scope == "app" else session.get(UserSettings, user_id)
     stored_response_language = settings_row.response_language if settings_row else None
     effective_language = request.speak_language
@@ -589,7 +642,11 @@ async def ask_avatar(
 
     primary      = "ja" if effective_language == "ja" else "en"
 
-
+    # Chat history is now per-user (X-User-Id) as well as per-avatar
+    # (character_name) — a row belongs to exactly one user, and each user
+    # sees only their own avatars' turns. Otherwise the model would see
+    # (and get confused by, or leak) another user's or another avatar's
+    # conversation.
     active_character_name = request.character_name or None
     own_turns = session.exec(
         select(ChatMessage)
@@ -683,14 +740,7 @@ async def generate_voice(request: VoiceRequest):
 
 @app.post("/stt")
 async def speech_to_text(audio: UploadFile = File(...), language: Optional[str] = Form(None)):
-    """
-    Server-side speech-to-text via Groq Whisper. Replaces reliance on the
-    browser's built-in SpeechRecognition for the *final* transcript — the
-    frontend still uses SpeechRecognition for live interim captions (it's
-    free/instant), but sends the actual recorded audio here and swaps in
-    this result before submitting, since Whisper is meaningfully more
-    accurate (accents, background noise, non-English speech).
-    """
+
     audio_bytes = await audio.read()
     if not audio_bytes:
         return JSONResponse({"error": "Empty audio"}, status_code=400)
