@@ -29,9 +29,6 @@ GROQ_MODEL    = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 GROQ_BASE_URL = _normalize_groq_base_url(os.environ.get("GROQ_BASE_URL", "https://api.groq.com"))
 
 
-GROQ_COMPOUND_MODEL = os.environ.get("GROQ_COMPOUND_MODEL", "groq/compound-mini")
-
-
 GROQ_STT_MODEL = os.environ.get("GROQ_STT_MODEL", "whisper-large-v3-turbo")
 
 try:

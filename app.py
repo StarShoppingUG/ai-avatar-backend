@@ -20,12 +20,12 @@ import edge_tts
 
 try:
     from .translation import translate_to_japanese, translate_to_english, is_japanese
-    from .ai import ai_available, call_llm, GROQ_MODEL, GROQ_COMPOUND_MODEL, _get_current_date_context, transcribe_audio
+    from .ai import ai_available, call_llm, GROQ_MODEL, _get_current_date_context, transcribe_audio
     from .json_utils import normalize_json_like, extract_quoted_value
     from .db import init_db, get_session, ChatMessage, UserSettings, AppSettings
 except ImportError:
     from translation import translate_to_japanese, translate_to_english, is_japanese
-    from ai import ai_available, call_llm, GROQ_MODEL, GROQ_COMPOUND_MODEL, _get_current_date_context, transcribe_audio
+    from ai import ai_available, call_llm, GROQ_MODEL, _get_current_date_context, transcribe_audio
     from json_utils import normalize_json_like, extract_quoted_value
     from db import init_db, get_session, ChatMessage, UserSettings, AppSettings
 
@@ -358,53 +358,6 @@ _DIRECT_PAT = re.compile(
     r"tell me|explain|define|give me|translate|what's|who's)\b", re.I
 )
 
-_NEEDS_LIVE_INFO_PAT_TIER1 = re.compile(
-    r"\b(latest|breaking|up to date|up-to-date|as of (?:today|now)|"
-    r"weather|forecast|news|score|scores|who won|stock price|stock market|"
-    r"exchange rate|current price|crypto price|bitcoin price|election|"
-    r"president|prime minister|champion|winner|reigning|world cup|"
-    r"olympics|super bowl|tournament results?)\b", re.I
-)
-_NEEDS_LIVE_INFO_PAT_TIER2 = re.compile(
-    r"\b(today|right now|currently|this week|this year|recently|"
-    r"these days|nowadays)\b", re.I
-)
-
-def _is_question(text: str) -> bool:
-    return "?" in text or bool(_DIRECT_PAT.search(text))
-
-def _needs_live_info(text: str) -> bool:
-    if _NEEDS_LIVE_INFO_PAT_TIER1.search(text):
-        return True
-    return bool(_NEEDS_LIVE_INFO_PAT_TIER2.search(text)) and _is_question(text)
-
-
-_LIVE_INFO_CACHE: dict = {}
-_LIVE_INFO_CACHE_TTL_SECONDS = 300  # 5 minutes — long enough to absorb a
-                                     # burst of the same question, short
-                                     # enough that "latest news" doesn't
-                                     # go stale within a session.
-_LIVE_INFO_CACHE_MAX = 100
-
-def _live_info_cache_key(character_name: str, user_text: str) -> str:
-    return f"{character_name or ''}::{user_text.strip().lower()}"
-
-def _get_live_info_cache(key: str):
-    entry = _LIVE_INFO_CACHE.get(key)
-    if not entry:
-        return None
-    raw, saved_at = entry
-    if time.monotonic() - saved_at > _LIVE_INFO_CACHE_TTL_SECONDS:
-        del _LIVE_INFO_CACHE[key]
-        return None
-    return raw
-
-def _save_live_info_cache(key: str, raw: str) -> None:
-    if len(_LIVE_INFO_CACHE) >= _LIVE_INFO_CACHE_MAX:
-        oldest_key = min(_LIVE_INFO_CACHE, key=lambda k: _LIVE_INFO_CACHE[k][1])
-        del _LIVE_INFO_CACHE[oldest_key]
-    _LIVE_INFO_CACHE[key] = (raw, time.monotonic())
-
 def _wrap_prompt(system_prompt: str, intent: str, character_name: str) -> str:
     date_context = _get_current_date_context()
 
@@ -434,19 +387,6 @@ _MEMORY_CONTEXT = (
     "═══════════════════════════════════════════════════════\n\n"
 )
 
-
-_COMPOUND_PERSONA_GUARD = (
-    "\n\nYou have access to live web search for this reply — and for THIS "
-    "reply specifically, your own training knowledge may be outdated. "
-    "ALWAYS use the web search tool to verify before answering, even if "
-    "you feel confident you already know the answer — do not rely on "
-    "memory alone for anything time-sensitive (current events, scores, "
-    "results, prices, holders of a position, etc). Then weave the "
-    "verified fact into your answer exactly like you'd already know it — "
-    "never say 'according to', name a website/source, or describe the "
-    "act of searching. State the fact plainly, in character, "
-    "the same way you'd answer anything else you know.\n"
-)
 
 async def think(user_text: str, system_prompt: str, history: list,
                 character_name: str = None) -> dict:
@@ -507,50 +447,8 @@ async def think(user_text: str, system_prompt: str, history: list,
     # not a reasoning task — low effort keeps latency down and avoids the
     # model drifting into an "explaining my answer" tone, 0.85 (vs
     # call_llm's 0.7 default) adds warmth/variety to phrasing.
-    needs_live_info = _needs_live_info(user_text)
-    live_info_cache_key = None
-    raw = None  # set below by cache hit, compound call, or default call
-    if needs_live_info:
-        live_info_cache_key = _live_info_cache_key(character_name, user_text)
-        cached_raw = _get_live_info_cache(live_info_cache_key)
-        if cached_raw is not None:
-            if DEV_LOGGING:
-                print(f"💾 Live-info cache hit: {user_text!r}")
-            raw = cached_raw
-            needs_live_info = False  # already resolved — skip the call block below
-
-    if needs_live_info and DEV_LOGGING:
-        print(f"🔎 Routing to {GROQ_COMPOUND_MODEL} (live-info turn): {user_text!r}")
-
     try:
-        if needs_live_info:
-            # Separate message list, not a mutation of `messages` — the
-            # guard text is compound-specific and must not leak into the
-            # fallback call below, which uses the default model and the
-            # unmodified prompt.
-            compound_messages = [
-                {"role": "system", "content": full_system + _COMPOUND_PERSONA_GUARD},
-                *messages[1:],
-            ]
-            try:
-                raw = await call_llm(
-                    compound_messages, json_mode=True, temperature=0.85,
-                    reasoning_effort="low", model=GROQ_COMPOUND_MODEL,
-                )
-                # Only cache a genuine compound success — caching the
-                # degraded fallback below would keep serving stale/no-data
-                # replies for the TTL window even after compound recovers.
-                if live_info_cache_key:
-                    _save_live_info_cache(live_info_cache_key, raw)
-            except Exception as e:
-                # Compound has tighter rate limits and can fail/deprecate
-                # independently of the main model — fall back to the
-                # normal in-character reply (no live data) rather than
-                # dropping the whole turn to the offline fallback.
-                print(f"⚠️ Compound call failed, falling back to default model: {e}")
-                raw = await call_llm(messages, json_mode=True, temperature=0.85, reasoning_effort="low")
-        elif raw is None:
-            raw = await call_llm(messages, json_mode=True, temperature=0.85, reasoning_effort="low")
+        raw = await call_llm(messages, json_mode=True, temperature=0.85, reasoning_effort="low")
         try:
             data = json.loads(normalize_json_like(raw))
         except Exception:
