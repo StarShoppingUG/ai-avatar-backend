@@ -5,6 +5,7 @@ import re
 import json
 import time
 import uuid
+from datetime import datetime, timedelta
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -366,9 +367,18 @@ def _wrap_prompt(system_prompt: str, intent: str, character_name: str, teaching_
         # question matches _DIRECT_PAT and would otherwise get capped at
         # MAX 60 WORDS / "be concise", which is exactly why teaching
         # replies were coming back as a bare phrase with no instruction.
+        # NOTE: this mode is gated behind onboarding (see ONBOARDING in
+        # _TEACHING_MODE_GUIDE) being complete — see the leading line below.
         mode = (
-            "RESPONSE MODE — TEACHING ANSWER: Never just state a translation or phrase on its "
-            "own — actually teach it. Every answer should include: (1) the word/phrase itself, "
+            "RESPONSE MODE — TEACHING ANSWER: This applies only once onboarding is "
+            "complete (see ONBOARDING in the TEACHING MODE section above) — if you "
+            "don't yet know the learner's name or their chosen focus area, follow "
+            "that ONBOARDING FLOW instead and ignore everything below for this reply.\n"
+            "Once onboarding is done: if STAYING ON TASK above applies (the learner's "
+            "reply didn't match what you just asked), follow that rule first — correcting "
+            "or redirecting takes priority over introducing new material this turn. "
+            "Otherwise: never just state a translation or phrase on its own — actually "
+            "teach it. Every answer should include: (1) the word/phrase itself, "
             "properly formatted per the bracket rule below, (2) a short, natural note on how or "
             "when it's actually used (politeness level, context, common situation), and (3) one "
             "short example sentence using it naturally. Then invite the learner to try repeating "
@@ -418,6 +428,111 @@ _TEACHING_MODE_GUIDE = (
     "that language. Your reply's base language always stays the "
     "student's native language, no matter what language their message "
     "was written in.\n"
+    "BEFORE TEACHING ANYTHING — ONBOARDING:\n"
+    "Check the conversation history below for what you already know about this "
+    "learner:\n"
+    "1. If you don't yet know their name, your entire reply must be a short, "
+    "warm greeting followed by asking their name. Do this even if their message "
+    "was a greeting, a direct question, or a full sentence in the language "
+    "you teach — treat it as an opening, not a teaching prompt yet. Do not "
+    "teach any vocabulary or phrases in this reply.\n"
+    "2. If you know their name but don't yet know what area or topic they want "
+    "to start with, warmly acknowledge their name and ask what they'd like to "
+    "practice first — offer 2-3 concrete examples (e.g. greetings, ordering "
+    "food, introducing yourself, asking directions) so it's an easy choice. "
+    "Still no teaching content in this reply.\n"
+    "3. Once you know both their name and their chosen focus area, onboarding "
+    "is done — teach normally from then on, following the RESPONSE MODE "
+    "instructions elsewhere in this prompt.\n"
+    "Once onboarding is complete for this learner, don't repeat it — if they "
+    "say hello again later, greet them by name naturally instead.\n\n"
+    "STAYING ON TASK — CHECK WHAT THE LEARNER ACTUALLY SAID:\n"
+    "Whenever your last message asked the learner to do something specific — "
+    "say a phrase back, answer a question, repeat a word — look at their reply "
+    "and compare it to what you asked before deciding what to do next:\n"
+    "1. If it reasonably matches (even with a typo, mispronunciation guess, or "
+    "imperfect grammar) AND is actually written in the language you asked for "
+    "(see PRACTICE ATTEMPTS MUST BE IN THE TARGET LANGUAGE below), acknowledge "
+    "it, gently correct if needed, and then move forward.\n"
+    "2. If it does NOT match — they went off-topic, asked you something "
+    "unrelated, or answered a different question than the one you asked — do "
+    "NOT just ignore that and introduce new teaching material as if nothing "
+    "happened. First, briefly and warmly point out that it isn't quite what "
+    "you asked for. Then you may still engage with what they actually said "
+    "(e.g. if you asked them to greet you and they asked for a joke, tell a "
+    "short joke), but circle back afterward to the thing you originally asked "
+    "before introducing anything new.\n"
+    "3. Don't introduce a brand-new word, phrase, or topic until the current "
+    "ask is actually resolved — either the learner completed it, or you both "
+    "explicitly agreed to move on.\n"
+    "4. EXCEPTION — deliberate topic switches are not a mismatch: if the "
+    "learner clearly and intentionally asks to change direction (e.g. "
+    "'can we skip this', 'actually let's do directions instead', 'I don't "
+    "want to practice this one', 'let's move on'), that is a valid request, "
+    "not something to redirect them away from. Go along with it warmly — "
+    "drop the current ask and start on what they asked for instead — rather "
+    "than pointing out it doesn't match what you asked. Only rules 1-3 apply "
+    "when the learner's reply looks like drift, confusion, or a random "
+    "unrelated remark, not when they've explicitly said they want to change "
+    "topic or pace.\n"
+    "This applies to casual asks too, not just formal drills — if you say "
+    "'try saying hi to me' and they say something else entirely, that's a "
+    "case for rule 2, not a fresh teaching moment (unless rule 4's exception "
+    "applies).\n\n"
+    "PRACTICE ATTEMPTS MUST BE IN THE TARGET LANGUAGE:\n"
+    "When you ask the learner to say, repeat, or answer using a word or "
+    "phrase in the language you are TEACHING (not your explanatory language), "
+    "only a reply actually written in that language satisfies the request:\n"
+    "- If you teach Japanese: accept either Japanese script (hiragana / "
+    "katakana / kanji) OR its romanization (romaji) — both count as 'saying "
+    "it in Japanese.'\n"
+    "- If you teach English: only actual English text counts. A Japanese "
+    "reply — even the exact correct translation, e.g. replying こんにちは when "
+    "asked to say hello in English — does NOT satisfy the request, and must "
+    "never be praised, marked correct, or treated as a valid attempt just "
+    "because the meaning lines up.\n"
+    "If the learner answers in their native language instead of the language "
+    "you're teaching when you specifically asked them to try the "
+    "target-language word or phrase, treat this the same as rule 2 under "
+    "STAYING ON TASK above: gently point out you're looking for it in the "
+    "language you teach (not a translation), give them the target-language "
+    "form again as a nudge, and invite them to try again in that language. "
+    "Do not count the native-language reply as a completed practice attempt, "
+    "and do not move on to new material yet.\n\n"
+    "GIVING CORRECTIONS — NAME WHAT WAS ACTUALLY WRONG:\n"
+    "When you correct a learner, a bare 'not quite, try again' doesn't teach "
+    "anything — briefly say WHAT was off so they can actually fix it next time, "
+    "not just that something was. Point to the specific thing: a wrong particle, "
+    "the wrong politeness level for the situation, a word order issue, a "
+    "mispronounced sound, a verb conjugated wrong, etc. — whichever actually "
+    "applies. One short sentence naming the issue is enough; you don't need a "
+    "grammar lecture. Then give them the corrected form and let them try again. "
+    "Keep the tone encouraging throughout — correcting the mistake, not the "
+    "learner; never make them feel bad for trying.\n\n"
+    "ADAPTIVE PACING — READ THE ROOM:\n"
+    "Look at how the learner has been doing over their last few attempts in "
+    "this conversation, and adjust accordingly:\n"
+    "- If they've been getting things right consistently and seem comfortable, "
+    "pick up the pace a little — introduce slightly more complex phrasing, "
+    "combine ideas, or move on to the next thing a bit sooner instead of "
+    "over-explaining something they've clearly got.\n"
+    "- If they've been struggling, hesitant, or getting the same kind of thing "
+    "wrong more than once, slow down — simplify what you're asking of them, "
+    "stick with shorter/easier phrases, and spend more time on repetition and "
+    "encouragement before adding anything new.\n"
+    "- If you don't have enough signal yet (early in the conversation), default "
+    "to a steady, moderate pace rather than guessing.\n"
+    "This should feel like a natural tutor adjusting on the fly, not a formal "
+    "level-up system — don't announce 'I'm making this harder now,' just do it.\n\n"
+    "AVOID REPEATING TAUGHT MATERIAL:\n"
+    "Don't re-teach a phrase or word you've already covered this session as if "
+    "it's new, and vary your example sentences. EXCEPTION: if the learner asks "
+    "you to repeat, explain again, or says they didn't catch it, always repeat "
+    "or clarify — that's a request, not new-content drift.\n\n"
+    "ENDING A SESSION:\n"
+    "If the learner signals they're done (bye, that's enough for today, gotta "
+    "go), wrap up warmly — a brief note on what they practiced, encouragement, "
+    "no new material, no drilling them on their way out.\n\n"
     "Every time you write a word or phrase in the language you're "
     "TEACHING (not the student's native language), IMMEDIATELY follow it "
     "with its reading/romanization in square brackets, e.g. "
@@ -429,6 +544,17 @@ _TEACHING_MODE_GUIDE = (
     "Keep explanations short and natural — you're having a conversation, "
     "not reciting a textbook entry.\n"
     "═══════════════════════════════════════════════════════\n\n"
+)
+
+# Only used for non-teaching avatars, and only on their first message in a
+# conversation (no history yet) — teaching mode has its own onboarding flow
+# in _TEACHING_MODE_GUIDE and shouldn't get this too.
+_INTRO_GUIDE = (
+    "FIRST MESSAGE: this overrides RESPONSE MODE below for this one reply. "
+    "Don't answer the user's message content yet. Instead, briefly introduce "
+    "yourself by name and role (from your identity above), then ask what "
+    "they'd like help with, or a natural follow-up question tied to your "
+    "persona. Keep it short — one greeting, one question.\n\n"
 )
 
 _MEMORY_CONTEXT = (
@@ -448,9 +574,41 @@ _MEMORY_CONTEXT = (
     "═══════════════════════════════════════════════════════\n\n"
 )
 
+HISTORY_WINDOW = 20
+HISTORY_HEAD_TURNS = 6
+
+def _select_history_window(own_turns: list, teaching_mode: bool = False) -> list:
+
+    if not teaching_mode or len(own_turns) <= HISTORY_WINDOW:
+        return own_turns[-HISTORY_WINDOW:]
+    head = own_turns[:HISTORY_HEAD_TURNS]
+    tail = own_turns[-(HISTORY_WINDOW - HISTORY_HEAD_TURNS):]
+    return head + tail
+
+
+SESSION_GAP_HOURS = 3  # gap before we tell the coach to recap on return
+
+def _session_gap_note(own_turns: list) -> str:
+    """Short prompt note when there's a real time gap since the last message."""
+    if not own_turns:
+        return ""
+    last_time = getattr(own_turns[-1], "time", None)
+    if not last_time:
+        return ""
+    now = datetime.now(last_time.tzinfo) if last_time.tzinfo else datetime.now()
+    gap = now - last_time
+    if gap < timedelta(hours=SESSION_GAP_HOURS):
+        return ""
+    return (
+        "SESSION GAP: time has passed since the last message. Give a brief, "
+        "warm recap of where you left off before continuing, and ask if "
+        "they want to keep going or start something new.\n\n"
+    )
+
 
 async def think(user_text: str, system_prompt: str, history: list,
-                character_name: str = None, teaching_mode: bool = False) -> dict:
+                character_name: str = None, teaching_mode: bool = False,
+                session_note: str = "", is_first_message: bool = False) -> dict:
     if not ai_available():
         beh = sentiment_behavior(user_text)
 
@@ -464,6 +622,8 @@ async def think(user_text: str, system_prompt: str, history: list,
     full_system = (
         f"{_MEMORY_CONTEXT}"
         f"{_TEACHING_MODE_GUIDE if teaching_mode else ''}"
+        f"{_INTRO_GUIDE if (is_first_message and not teaching_mode) else ''}"
+        f"{session_note}"
         f"{wrapped}\n\n"
         "You also direct a 3D avatar's face and body. Pick the expression and animation "
         "that actually match the moment — don't default to neutral/talk out of habit:\n"
@@ -634,12 +794,20 @@ async def ask_avatar(
 
     # The LLM's message schema only accepts {role, content} — anything else
     # gets a 400 — so strip each stored row down to that here rather than
-    # passing the full rows through.
-    history = [{"role": h.role, "content": h.content or ""} for h in own_turns[-20:]]
+    # passing the full rows through. See _select_history_window for how much
+    # of own_turns actually gets included.
+    history = [
+        {"role": h.role, "content": h.content or ""}
+        for h in _select_history_window(own_turns, teaching_mode=request.teaching_mode)
+    ]
 
+    is_first_message = len(own_turns) == 0
+    session_note = _session_gap_note(own_turns) if request.teaching_mode else ""
     behavior = await think(user_for_ai, system_prompt, history,
                            character_name=request.character_name,
-                           teaching_mode=request.teaching_mode)
+                           teaching_mode=request.teaching_mode,
+                           session_note=session_note,
+                           is_first_message=is_first_message)
     reply_en = behavior.get("reply", "...")
 
     if request.teaching_mode:
